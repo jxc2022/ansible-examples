@@ -12,3 +12,9 @@
   command: "echo Hello"
   register: command_output
 - debug: msg="{{command_output.stdout}}"
+
+
+- name: Create variable from command
+  command: cat /etc/hosts
+  register: command_output1
+- debug: msg="{{command_output1.stdout}}"
