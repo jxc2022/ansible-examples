@@ -7,3 +7,8 @@
   command: getenforce
   register: sestatus
   changed_when: false
+
+- name: Create variable from command
+  command: "echo Hello"
+  register: command_output
+- debug: msg="{{command_output.stdout}}"
