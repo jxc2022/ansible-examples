@@ -31,3 +31,12 @@
       register: iis_debug
       
     - debug: var=iis_debug
+
+- name: Download simple web site 
+  hosts: 192.168.178.132 
+  gather_facts: true
+  tasks:
+    - name: Download simple web site to 'C:\inetpub\wwwroot\ansible.html'
+      win_get_url:
+        url: 'https://raw.githubusercontent.com/thisdavejohnson/mywebapp/master/index.html'
+        dest: 'C:\inetpub\wwwroot\ansible.html'
