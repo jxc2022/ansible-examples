@@ -8,7 +8,7 @@
     - debug: var=ipconfig
 
 - name: test stat module
-  hosts: windows
+  hosts: 192.168.178.132
   tasks:
     - name: test stat module on file
       win_stat: path="C:/Windows/win.ini"
@@ -26,7 +26,7 @@
 
 
 - name: Install IIS
-  hosts: all
+  hosts: 192.168.178.132
   gather_facts: false
   tasks:
     - name: Install IIS
