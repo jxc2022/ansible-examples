@@ -16,14 +16,6 @@
 
     - debug: var=stat_file
 
-    - name: check stat_file result
-      assert:
-          that:
-             - "stat_file.stat.exists"
-             - "not stat_file.stat.isdir"
-             - "stat_file.stat.size > 0"
-             - "stat_file.stat.md5"
-
 
 - name: Install IIS
   hosts: 192.168.178.132
@@ -36,3 +28,6 @@
         restart: yes
         include_sub_features: yes
         include_management_tools: yes
+      register: iis_debug
+      
+    - debug: var=iis_debug
