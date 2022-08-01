@@ -1,6 +1,6 @@
 ---
 - name: test raw module
-  hosts: all 
+  hosts: 192.168.178.132
   tasks:
     - name: run ipconfig
       raw: ipconfig
