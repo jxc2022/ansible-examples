@@ -1,6 +1,6 @@
 ---
 - name: test raw module
-  hosts: 192.168.178.132
+  hosts: 192.168.178.131
   tasks:
     - name: run ipconfig
       raw: ipconfig
@@ -8,7 +8,7 @@
     - debug: var=ipconfig
 
 - name: test stat module
-  hosts: 192.168.178.132
+ # hosts: 192.168.178.132
   tasks:
     - name: test stat module on file
       win_stat: path="C:/Windows/win.ini"
@@ -18,7 +18,7 @@
 
 
 - name: Install IIS
-  hosts: 192.168.178.132
+  #hosts: 192.168.178.132
   gather_facts: false
   tasks:
     - name: Install IIS
@@ -33,7 +33,7 @@
     - debug: var=iis_debug
 
 - name: Download simple web site 
-  hosts: 192.168.178.132 
+  #hosts: 192.168.178.132 
   gather_facts: true
   tasks:
     - name: Download simple web site to 'C:\inetpub\wwwroot\ansible.html'
