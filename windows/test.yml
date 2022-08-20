@@ -56,4 +56,4 @@
      win_reboot:
       msg: "Installing AD. Rebooting..."
       pre_reboot_delay: 15
-     when: ad.changed
+     when: result.changed
