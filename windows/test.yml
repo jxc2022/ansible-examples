@@ -41,6 +41,17 @@
         url: 'https://raw.githubusercontent.com/thisdavejohnson/mywebapp/master/index.html'
         dest: 'C:\inetpub\wwwroot\ansible.html'
         
+- name: remove first domain controller
+  hosts:  192.168.178.205
+  gather_facts: yes
+  tasks:
+   - name: install ad
+     win_feature: >
+          name=AD-Domain-Services
+          include_management_tools=yes
+          include_sub_features=yes
+          state=absent
+        
 - name: install first domain controller
   hosts:  192.168.178.205
   gather_facts: yes
