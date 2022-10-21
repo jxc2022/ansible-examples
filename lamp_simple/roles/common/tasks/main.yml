@@ -6,44 +6,18 @@
 - name: test to see if selinux is running
   command: getenforce
   register: sestatus
-  changed_when: false
+  changed_when: true
 
-- name: Create variable from command
+- name: Create variable from ehhco
   command: "echo Hello"
   register: command_output
 - debug: msg="{{command_output.stdout}}"
 
 
-- name: Create variable from command
+- name: Create variable from  /etc/hosts
   command: cat /etc/hosts
   register: command_output1
 - debug: msg="{{command_output1.stdout}}"
 
 
-   - name: Control host
-      block:
-        - name: Check if ansible is installed
-          package_facts:
-
-        - name: Fail if ansible is not of a recent enough version
-          fail:
-            msg: "Ansible is not of a recent enough version on {{ inventory_hostname }}."
-          when: ((ansible_facts.packages['ansible'][0]['version'] is not defined) or (ansible_facts.packages['ansible'][0]['version']|string) is version("2.9.0",'<'))
-
-        - name: Test access by exporting assets
-          tower_receive:
-            inventory:
-              - all
-            tower_host: "{{ inventory_hostname|regex_replace('-ansible-1', '') }}.{{ workshop_name }}.rhdemo.io"
-            tower_username: admin
-            tower_password: "{{ tower_password }}"
-            tower_verify_ssl: false
-          register: export_assets
-          until: export_assets is success
-          delay: 3
-          retries: 60
-
-        - name: cat /etc/hosts
-          ansible.builtin.shell: cat /etc/hosts >> somelog.txt
-      
-      when: '"ansible-1" in inventory_hostname'
+   
