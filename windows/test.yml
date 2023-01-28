@@ -7,9 +7,9 @@
       register: ipconfig
     - debug: var=ipconfig
 
-- name: test stat module
-  hosts: 192.168.178.212 
-  tasks:
+#- name: test stat module
+  #hosts: 192.168.178.212 
+  #tasks:
     - name: test stat module on file
       win_stat: path="C:/Windows/win.ini"
       register: stat_file
