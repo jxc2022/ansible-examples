@@ -4,7 +4,7 @@
 - name: hostname
   command: "hostname"
   register: hostname
-- debug: msg="{hostname.stdout}"
+- debug: msg="{{hostname.stdout}}"
 
 - name: Add jorgetest group
   group:
@@ -21,8 +21,8 @@
 
 - name: Add jorgetest group
   command: "getent passwd jorge"
-  register: "getent"
-- debug: msg="{getent.stdout}"
+  register: getent
+- debug: msg="{{getent.stdout}}"
 
 - name: test to see if selinux is running
   command: getenforce
