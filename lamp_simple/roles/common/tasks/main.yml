@@ -1,8 +1,28 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
-- name: foo
-  shell: "ansible --version"
+- name: hostname
+  command: "hostname"
+  register: hostname
+- debug: msg="{hostname.stdout}"
+
+- name: Add jorgetest group
+  group:
+    name: jorgetest
+    gid: 598240
+    state: present
+
+- name: Disable auto logout part 1
+  replace:
+    path: /etc/ssh/sshd_config
+    regexp: 'ClientAliveInterval'
+    replace: '#ClientAliveInterval'
+  
+
+- name: Add jorgetest group
+  command: "getent passwd jorge"
+  register: "getent"
+- debug: msg="{getent.stdout}"
 
 - name: test to see if selinux is running
   command: getenforce
