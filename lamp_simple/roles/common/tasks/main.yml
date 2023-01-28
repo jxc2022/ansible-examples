@@ -12,10 +12,12 @@
     src: https://dlcdn.apache.org/perl/mod_perl-2.0.12.tar.gz
     dest: /home/jorge
     remote_src: yes
-    creates: /home/jorge/modperl
+    creates: /home/jorge/mod_perl-2.0.12
     validate_certs: no
     owner: jorge
     group: jorge
+    
+
   
 
 - name: hostname
