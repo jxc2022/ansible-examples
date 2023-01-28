@@ -17,7 +17,7 @@
     - debug: var=stat_file
 
 
-  - name: Install IIS
+  #- name: Install IIS
     #hosts: 192.168.178.212
     #gather_facts: false
   #tasks:
