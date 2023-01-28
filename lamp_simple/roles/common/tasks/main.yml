@@ -17,7 +17,11 @@
     owner: jorge
     group: jorge
     
-
+- name: update permissions
+  file:
+    path: /home/jorge/mod_perl-2.0.12
+    recurse: yes
+    mode: '0755'
   
 
 - name: hostname
