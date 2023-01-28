@@ -7,7 +7,7 @@
   command: getenforce
   register: sestatus
   changed_when: true
-- debug: msg="{{sestatus_output.stdout}}"
+- debug: msg="{{sestatus.stdout}}"
 
 - name: Create variable from ehhco
   command: "echo Hello"
