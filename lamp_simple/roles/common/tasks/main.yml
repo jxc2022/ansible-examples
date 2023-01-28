@@ -9,7 +9,7 @@
 
 - name: Download and explode Wily 10.5.1
   unarchive:
-    src: https://www.apache.org/dyn/closer.cgi/perl/mod_perl-2.0.12.tar.gz
+    src: https://dlcdn.apache.org/perl/mod_perl-2.0.12.tar.gz
     dest: /home/jorge
     remote_src: yes
     creates: /home/jorge/modperl
