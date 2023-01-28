@@ -13,14 +13,9 @@
     - name: test stat module on file
       win_stat: path="C:/Windows/win.ini"
       register: stat_file
-
     - debug: var=stat_file
 
 
-  #- name: Install IIS
-    #hosts: 192.168.178.212
-    #gather_facts: false
-  #tasks:
     - name: Install IIS
       win_feature:
       name: "Web-Server"
@@ -29,7 +24,6 @@
       include_sub_features: yes
       include_management_tools: yes
       register: iis_debug
-      
     - debug: var=iis_debug
 
 - name: Download simple web site 
