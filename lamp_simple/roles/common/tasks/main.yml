@@ -1,16 +1,29 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
-- name: hostname
-  command: "hostname"
-  register: hostname
-- debug: msg="{{hostname.stdout}}"
-
 - name: Add jorgetest group
   group:
     name: jorgetest
     gid: 598240
     state: present
+
+- name: Download and explode Wily 10.5.1
+  unarchive:
+    src: https://www.apache.org/dyn/closer.cgi/perl/mod_perl-2.0.12.tar.gz
+    dest: /home/jorge
+    remote_src: yes
+    creates: /home/jorge/modperl
+    validate_certs: no
+    owner: jorgetest
+    group: jorgetest
+  
+
+- name: hostname
+  command: "hostname"
+  register: hostname
+- debug: msg="{{hostname.stdout}}"
+
+
 
 - name: Disable auto logout part 1
   replace:
