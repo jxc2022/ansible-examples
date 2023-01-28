@@ -14,8 +14,8 @@
     remote_src: yes
     creates: /home/jorge/modperl
     validate_certs: no
-    owner: jorgetest
-    group: jorgetest
+    owner: jorge
+    group: jorge
   
 
 - name: hostname
