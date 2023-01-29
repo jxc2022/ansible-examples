@@ -63,7 +63,7 @@
            include_sub_features=yes
            state=present
       register: result
-    - debug: msg= result.changed
+    - debug: msg= "{{result.changed}}"
       
     - name: reboot server
       win_reboot:
