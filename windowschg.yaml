@@ -65,7 +65,7 @@
            include_sub_features=yes
            state=present
       register: result
-    - debug: msg= ""{{result.stdout}}""
+    - debug: msg=""{{result.stdout}}""
       
     - name: reboot server
       win_reboot:
