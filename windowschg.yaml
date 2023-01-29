@@ -13,7 +13,7 @@
      - name: test stat module on file
        win_stat: path="C:/Windows/win.ini"
        register: stat_file
-    - debug: var=stat_file
+     - debug: var=stat_file
  
 
  - name: remove IIS
