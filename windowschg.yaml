@@ -27,7 +27,7 @@
          restart: yes
          include_sub_features: yes
          include_management_tools: yes
-         register: iisr_debug
+       register: iisr_debug
      - debug: msg= ""{{iisr_debug}}""
      
  - name: Install IIS
@@ -41,7 +41,7 @@
          restart: yes
          include_sub_features: yes
          include_management_tools: yes
-         register: iisa_debug
+       register: iisa_debug
      - debug: msg= ""{{iisa_debug}}""
  
  - name: Download simple web site 
