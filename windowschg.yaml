@@ -27,8 +27,8 @@
          restart: yes
          include_sub_features: yes
          include_management_tools: yes
-       register: iisr_debug
-     - debug: msg= ""{{iisr_debug.stdout}}""
+       register: iisr
+     - debug: msg= ""{{iisr.stdout}}""
      
  - name: Install IIS
    hosts: 192.168.178.212
