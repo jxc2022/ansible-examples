@@ -45,7 +45,7 @@
    hosts:  192.168.178.212
    gather_facts: yes
    tasks:
-    - name: install ad
+    - name: remove ad
       win_feature: >
            name=AD-Domain-Services
            include_management_tools=yes
@@ -61,8 +61,10 @@
            name=AD-Domain-Services
            include_management_tools=yes
            include_sub_features=yes
-           state=present
+           state=absent
       register: result
+      when: result.changed
+      
     - name: reboot server
       win_reboot:
        msg: "Installing AD. Rebooting..."
