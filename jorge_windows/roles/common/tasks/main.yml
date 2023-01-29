@@ -15,32 +15,31 @@
   register: stat_file
 - debug: var=stat_file
  
-
- - name: remove IIS
-   hosts: 192.168.178.212
-   gather_facts: false
-   tasks:
-     - name: remove IIS
-       win_feature:
-         name: "Web-Server"
-         state: absent
-         restart: yes
-         include_sub_features: yes
-         include_management_tools: yes
+#- name: remove IIS
+   #hosts: 192.168.178.212
+ #  gather_facts: false
+   #tasks:
+- name: remove IIS
+  win_feature:
+    name: "Web-Server"
+    state: absent
+    restart: yes
+    include_sub_features: yes
+    include_management_tools: yes
        #register: iisr
      #- debug: msg= ""{{iisr.stdout}}""
      
- - name: Install IIS
-   hosts: 192.168.178.212
-   gather_facts: false
-   tasks:
-     - name: Install IIS
-       win_feature:
-         name: "Web-Server"
-         state: present
-         restart: yes
-         include_sub_features: yes
-         include_management_tools: yes
+#- name: Install IIS
+  # hosts: 192.168.178.212
+   #gather_facts: false
+   #tasks:
+- name: Install IIS
+  win_feature:
+    name: "Web-Server"
+    state: present
+    restart: yes
+    include_sub_features: yes
+    include_management_tools: yes
        #register: iisa_debug
      #- debug: msg= ""{{iisa_debug.stdout}}""
  
