@@ -13,10 +13,22 @@
      - name: test stat module on file
        win_stat: path="C:/Windows/win.ini"
        register: stat_file
+    - debug: var=stat_file
  
-     - debug: var=stat_file
- 
- 
+
+ - name: remove IIS
+   hosts: 192.168.178.212
+   gather_facts: false
+   tasks:
+     - name: remove IIS
+       win_feature:
+         name: "Web-Server"
+         state: absent
+         restart: yes
+         include_sub_features: yes
+         include_management_tools: yes
+     - debug: var=iis_debug
+     
  - name: Install IIS
    hosts: 192.168.178.212
    gather_facts: false
@@ -28,8 +40,6 @@
          restart: yes
          include_sub_features: yes
          include_management_tools: yes
-       register: iis_debug
-       
      - debug: var=iis_debug
  
  - name: Download simple web site 
@@ -41,17 +51,7 @@
          url: 'https://raw.githubusercontent.com/thisdavejohnson/mywebapp/master/index.html'
          dest: 'C:\inetpub\wwwroot\ansible.html'
          
- - name: remove first domain controller
-   hosts:  192.168.178.212
-   gather_facts: yes
-   tasks:
-    - name: remove ad
-      win_feature: >
-           name=AD-Domain-Services
-           include_management_tools=yes
-           include_sub_features=yes
-           state=absent
-         
+        
  - name: install first domain controller
    hosts:  192.168.178.212
    gather_facts: yes
@@ -61,9 +61,9 @@
            name=AD-Domain-Services
            include_management_tools=yes
            include_sub_features=yes
-           state=absent
+           state=present
       register: result
-      when: result.changed
+    - debug: msg= result.changed
       
     - name: reboot server
       win_reboot:
