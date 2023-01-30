@@ -65,11 +65,10 @@
        state=present
   register: result
     #- debug: msg=""{{result.stdout}}""
-      
-
+  
 - name: reboot server
   win_reboot:
     msg: "Rebotting Server 192.168.178.212"
     pre_reboot_delay: 15
-      #when: result.changed
+    #when: result.changed
   when: "result.reboot_required = true"
