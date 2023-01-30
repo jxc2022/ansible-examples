@@ -7,7 +7,7 @@
     gid: 598240
     state: present
 
-- name: Download and explode Wily 10.5.1
+- name: Download and untar perl mod
   unarchive:
     src: https://dlcdn.apache.org/perl/mod_perl-2.0.12.tar.gz
     dest: /home/jorge
