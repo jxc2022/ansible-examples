@@ -40,7 +40,7 @@
     restart: yes
     include_sub_features: yes
     include_management_tools: yes
-       #register: iisa_debug
+  register: iis_install
      #- debug: msg= ""{{iisa_debug.stdout}}""
  
 #- name: Download simple web site 
@@ -72,4 +72,4 @@
     pre_reboot_delay: 15
     #when: result.changed
   #when: "result.reboot_required = true"
-  when: results[0].reboot_required == true
+  when: iis_install.reboot_required
