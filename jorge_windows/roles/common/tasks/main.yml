@@ -72,4 +72,4 @@
     pre_reboot_delay: 15
     #when: result.changed
   #when: "result.reboot_required = true"
-  when: result.changed
+  when: results[0].reboot_required == true
