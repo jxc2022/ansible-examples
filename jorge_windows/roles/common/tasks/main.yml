@@ -71,4 +71,5 @@
     msg: "Rebotting Server 192.168.178.212"
     pre_reboot_delay: 15
     #when: result.changed
-  when: "result.reboot_required = true"
+  #when: "result.reboot_required = true"
+  when: result.changed
