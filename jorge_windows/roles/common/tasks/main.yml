@@ -41,7 +41,7 @@
     include_sub_features: yes
     include_management_tools: yes
   register: iis_install
-     #- debug: msg= ""{{iisa_debug.stdout}}""
+- debug: msg= ""{{iis_install.stdout}}""
  
 #- name: Download simple web site 
    #hosts: 192.168.178.212 
