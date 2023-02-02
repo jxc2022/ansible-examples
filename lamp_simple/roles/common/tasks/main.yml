@@ -3,7 +3,7 @@
 
 - name: get facts
   gather_facts: yes
-- debug: msg="The operating system is {{ ansible_distribution }}" 
+#- debug: msg="The operating system is {{ ansible_distribution }}" 
 
 - name: Add jorgetest group
   group:
