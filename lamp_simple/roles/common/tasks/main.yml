@@ -18,7 +18,7 @@
   become_user: root 
   shell: "uname -a"
   register: mynode
-  when: "{{ ansible_hostname == 'rhel77'}}"
+  when: ansible_hostname == rhel77
 - debug: msg=""{{mynode.stdout}}""  
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
