@@ -23,14 +23,6 @@
     msg: "Mount Point {{item.mount}} is at {{item.block_used/item.block_total*100}} percent "
   loop: "{{ansible_mounts}}"
 
-# Execute Host based task using variable
-- name: Execute the command only rhel77 server
-  become: yes
-  become_user: root 
-  shell: "uname -a"
-  register: mynode
-  when: ansible_hostname == rhel77
-- debug: msg=""{{mynode.stdout}}""  
 
 #- debug: msg="The operating system is {{ ansible_distribution }}" 
 
