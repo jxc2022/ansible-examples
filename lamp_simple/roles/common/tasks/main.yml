@@ -7,7 +7,7 @@
   become_user: root 
   shell: "hostname"
   register: mynode
-  when: ansible_hostname == rhel77
+  when: ansible_hostname == 'rhel77'
 - debug: var=mynode 
 
 # This playbook contains common plays that will be run on all nodes.
