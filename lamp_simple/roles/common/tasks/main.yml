@@ -1,4 +1,11 @@
 ---
+# This playbook contains common plays that will be run on all nodes.
+
+- name: test setface
+- set_fact:
+    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|wlan)[0-9]+') | list}}"
+- debug:
+    msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
  
@@ -7,10 +14,10 @@
   become_user: root 
   shell: "hostname"
   register: mynode
-  when: ansible_hostname == 'rhelg77'
+  when: ansible_hostname == 'rhel77'
 - debug: var=mynode 
 
-# This playbook contains common plays that will be run on all nodes.
+
 - debug:
     msg: "{{ansible_hostname}}"
 
