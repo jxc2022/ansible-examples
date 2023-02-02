@@ -1,9 +1,9 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
-- name: get facts
-  gather_facts: yes
-#- debug: msg="The operating system is {{ ansible_distribution }}" 
+- name: get 
+  #gather_facts: yes
+- debug: msg="The operating system is {{ ansible_distribution }}" 
 
 - name: Add jorgetest group
   group:
