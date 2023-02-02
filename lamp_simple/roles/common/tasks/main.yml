@@ -7,7 +7,7 @@
   become_user: root 
   shell: "hostname"
   register: mynode
-  when: ansible_hostname == 'rhel77'
+  when: ansible_hostname == 'rhelg77'
 - debug: var=mynode 
 
 # This playbook contains common plays that will be run on all nodes.
@@ -49,13 +49,6 @@
     recurse: yes
     mode: '0755'
   
-
-- name: hostname
-  command: "hostname"
-  register: hostname
-- debug: msg="{{hostname.stdout}}"
-
-
 
 - name: Disable auto logout part 1
   replace:
