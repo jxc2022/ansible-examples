@@ -2,7 +2,7 @@
 # This playbook contains common plays that will be run on all nodes.
 
 - name: test setface
-- set_fact:
+  set_fact:
     interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|wlan)[0-9]+') | list}}"
 - debug:
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
