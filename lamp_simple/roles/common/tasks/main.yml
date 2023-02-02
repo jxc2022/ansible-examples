@@ -11,11 +11,13 @@
   loop: "{{ansible_mounts}}"
 
 # Execute Host based task using variable
-- name: Execute the command only mwiapp01 server
+- name: Execute the command only rhel77 server
   become: yes
   become_user: root 
   shell: "uname -a"
+  register: mynode
   when: "{{ ansible_hostname == 'rhel77'}}"
+- debug: msg=""{{mynode.stdout}}""  
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
 
