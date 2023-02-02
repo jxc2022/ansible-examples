@@ -1,5 +1,7 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
+- debug:
+    msg: "{{ansible_hostname}}"
 
 # Print the Dictionary
 - debug:
