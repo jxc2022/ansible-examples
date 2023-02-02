@@ -1,4 +1,15 @@
 ---
+
+- debug: msg="The operating system is {{ ansible_distribution }}" 
+ 
+- name: Execute the command only rhel77 server
+  become: yes
+  become_user: root 
+  shell: "hostname"
+  register: mynode
+  when: ansible_hostname == rhel77
+- debug: var=mynode 
+
 # This playbook contains common plays that will be run on all nodes.
 - debug:
     msg: "{{ansible_hostname}}"
@@ -21,7 +32,7 @@
   when: ansible_hostname == rhel77
 - debug: msg=""{{mynode.stdout}}""  
 
-- debug: msg="The operating system is {{ ansible_distribution }}" 
+#- debug: msg="The operating system is {{ ansible_distribution }}" 
 
 
 - name: Add jorgetest group
