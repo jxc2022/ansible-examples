@@ -1,6 +1,21 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
+# Print the Dictionary
+- debug:
+    msg: "{{ansible_mounts}}"
+
+# Parsing through Variable Dictionary
+- debug:
+    msg: "Mount Point {{item.mount}} is at {{item.block_used/item.block_total*100}} percent "
+  loop: "{{ansible_mounts}}"
+
+# Execute Host based task using variable
+- name: Execute the command only mwiapp01 server
+  become: yes
+  become_user: root 
+  shell: "uname -a"
+  when: "{{ ansible_hostname == 'rhel77'}}"
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
 
