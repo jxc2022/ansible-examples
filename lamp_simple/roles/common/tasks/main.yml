@@ -1,8 +1,13 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
-- debug:
+
+- name: Print all available facts
+  ansible.builtin.debug:
     var: ansible_facts
+
+#- debug:
+#    var: ansible_facts
 
 - name: test set fact
   set_fact:
