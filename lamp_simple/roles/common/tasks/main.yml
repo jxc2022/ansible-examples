@@ -1,6 +1,14 @@
 ---
 # This playbook contains common plays that will be run on all nodes.
 
+- name: Facts
+  setup:
+- name: Dump
+  delegate_to: localhost
+  run_once: true
+  copy:
+    content: "{{ hostvars[inventory_hostname] | to_nice_json }}"
+    dest: /tmp/setup-dump.json
 
 - name: Print all available facts
   ansible.builtin.debug:
@@ -11,7 +19,7 @@
 
 - name: test set fact
   set_fact:
-    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|br|lo.*|)[0-9]+') | list}}"
+    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|lo.*|)[0-9]+') | list}}"
  #   interface_list: "{{ ansible_interfaces | select('match','lo.*') | list | first }}"
 - debug:
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
