@@ -46,11 +46,12 @@
     msg: "{{ansible_mounts}}"
 
 # Parsing through Variable Dictionary
-- name: when nfs
+#- name: when nfs
   when: item.fstype == 'nfs4'
 - debug:
     msg: "Mount Point {{item.mount}} is at {{item.block_used/item.block_total*100}} percent "
   loop: "{{ansible_mounts}}"
+  when: item.fstype == 'nfs4'
 
 
 #- debug: msg="The operating system is {{ ansible_distribution }}" 
