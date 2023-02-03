@@ -70,7 +70,13 @@
     path: /etc/ssh/sshd_config
     regexp: 'ClientAliveInterval'
     replace: '#ClientAliveInterval'
-  
+ 
+- name: Disable auto logout part 2
+  replace:
+    path: /etc/ssh/sshd_config
+    regexp: 'ClientAliveCountMax'
+    replace: '#ClientAliveCountMax'
+
 
 - name: Add jorgetest group
   command: "getent passwd jorge"
