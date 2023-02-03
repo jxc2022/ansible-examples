@@ -11,9 +11,13 @@
 
 - name: test set fact
   set_fact:
-    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|lo)[0-9]+') | list}}"
+    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|br)[0-9]+') | list}}"
+    interface_list: "{{ ansible_interfaces | select('match','lo.*') | list | first }}"
 - debug:
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
+
+- debug:
+    msg: "The interface's list on "{{ ansible_hostname }}" is "{{ interface_list }}"
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
  
