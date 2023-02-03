@@ -11,20 +11,20 @@
 
 - name: test set fact
   set_fact:
-    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|br)[0-9]+') | list}}"
-    interface_list: "{{ ansible_interfaces | select('match','lo.*') | list | first }}"
+    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|br|lo.*|)[0-9]+') | list}}"
+ #   interface_list: "{{ ansible_interfaces | select('match','lo.*') | list | first }}"
 - debug:
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
 
-- debug:
-    msg: The interface's list on "{{ ansible_hostname }}" is "{{ interface_list }}"
+#- debug:
+#    msg: The interface's list on "{{ ansible_hostname }}" is "{{ interface_list }}"
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
  
 - name: Execute the command only rhel77 server
   become: yes
   become_user: root 
-  shell: "hostname"
+  shell: "systemctl restart sshd"
   register: mynode
   when: ansible_hostname == 'rhel77'
 - debug: var=mynode 
