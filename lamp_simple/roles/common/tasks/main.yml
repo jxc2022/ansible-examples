@@ -17,7 +17,7 @@
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
 
 - debug:
-    msg: "The interface's list on "{{ ansible_hostname }}" is "{{ interface_list }}"
+    msg: The interface's list on "{{ ansible_hostname }}" is "{{ interface_list }}"
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
  
