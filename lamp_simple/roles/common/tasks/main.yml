@@ -51,9 +51,6 @@
   ansible.builtin.debug:
     var: ansible_facts
 
-#- debug:
-#    var: ansible_facts
-
 - name: test set fact
   set_fact:
     interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|lo.*|)[0-9]+') | list}}"
@@ -81,10 +78,14 @@
 # Print the Dictionary
 - debug:
     msg: "{{ansible_mounts}}"
+    
+- name: mount nfs when "{{ansible_hostname}}"
+  shell: "mount -v -t nfs linuxnfs.file.core.windows.net:/linuxnfs/linuxnfs1 /mount/linuxnfs/linuxnfs1 -o vers=4,minorversion=1,sec=sys"
+  when: ansible_hostname == 'rhel77'
+- debug: var=mynode 
 
-# Parsing through Variable Dictionary
-#- name: when nfs
-  #when: item.fstype == 'nfs4'
+
+
 - debug:
     msg: "Mount Point {{item.mount}} is at {{item.block_used/item.block_total*100}} percent "
   loop: "{{ansible_mounts}}"
