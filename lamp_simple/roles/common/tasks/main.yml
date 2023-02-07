@@ -1,13 +1,4 @@
 ---
-- name: rhel
-  vars:
-   - username: jorge
-   - home: /home/jorge
-   - replace: Hello World-
-   - port_no: 80
-   - pkg_name: httpd
-
-
 - debug: msg="The operating system is {{ ansible_distribution }}"
 
 - name: print variables
