@@ -1,6 +1,60 @@
 ---
-# This playbook contains common plays that will be run on all nodes.
+ vars:
+   - username: jorge
+   - home: /home/jorge
+   - replace: Hello World-
+   - port_no: 80
+   - pkg_name: httpd
 
+
+- debug: msg="The operating system is {{ ansible_distribution }}"
+
+- name: print variables
+  debug:
+    msg: "Username: {{ username }}, Home dir: {{ home }}"
+
+- name: Create variable from  /etc/hosts
+  command: cat /etc/hosts
+  register: hosts_content
+- debug: msg="{{hosts_content.stdout}}"
+
+- name: output of var replace
+  debug:
+    msg: "{{ replace }}"
+
+- name: var replace
+  debug:
+    msg: "{{ replace | replace('-', '!!!!') }}"
+
+
+- name: Check if hosts file contains the word "localhost"
+  debug:
+    msg: "/etc/hosts file contains the word localhost"
+  when: hosts_content.stdout.find("localhost") != -1
+
+- name: hosts replace
+  debug:
+    msg: "{{ hosts_content.stdout | replace('localhost', 'jorge') }}"
+
+- debug:
+    msg:
+     - "The value of port is {{ port_no }}"
+     - "The value of pkg is {{ pkg_name }}"
+     - "The value of hostname is {{ inventory_hostname }}"
+     - "The value of node name is {{ ansible_hostname }}"
+     - "Ansible version is {{ ansible_version }}"
+
+
+
+
+
+
+
+
+
+
+
+#works from below
 - name: Facts
   setup:
 - name: Dump
