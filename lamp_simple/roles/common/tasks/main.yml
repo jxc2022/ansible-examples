@@ -1,5 +1,6 @@
 ---
- vars:
+- name: rhel
+  vars:
    - username: jorge
    - home: /home/jorge
    - replace: Hello World-
@@ -43,15 +44,6 @@
      - "The value of hostname is {{ inventory_hostname }}"
      - "The value of node name is {{ ansible_hostname }}"
      - "Ansible version is {{ ansible_version }}"
-
-
-
-
-
-
-
-
-
 
 
 #works from below
