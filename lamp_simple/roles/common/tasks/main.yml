@@ -85,7 +85,7 @@
 #  register: mymnt
 # - debug: var=mymnt 
 
-- name: Mount NFS volumes with noauto according to boot option
+- name: mount nfs when "{{ansible_hostname}}"
   mount:
     src:  linuxnfs.file.core.windows.net:/linuxnfs/linuxnfs1
     path: /mount/linuxnfs/linuxnfs1
@@ -93,6 +93,9 @@
     boot: false
     state: mounted
     fstype: nfs
+  when: ansible_hostname == 'rhel77'
+  register: mymnt
+- debug: var=mymnt
 
 
 - debug:
