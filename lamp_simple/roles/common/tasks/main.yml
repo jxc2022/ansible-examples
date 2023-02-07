@@ -86,7 +86,7 @@
 # - debug: var=mymnt 
 
 - name: Mount NFS volumes with noauto according to boot option
-  ansible.posix.mount:
+  mount:
     src:  linuxnfs.file.core.windows.net:/linuxnfs/linuxnfs1
     path: /mount/linuxnfs/linuxnfs1
     opts: rw,sync,hard
