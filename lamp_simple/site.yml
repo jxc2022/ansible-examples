@@ -4,6 +4,12 @@
 - name: apply common configuration to all nodes
   hosts: all
   remote_user: root
+  vars:
+    - username: jorge
+    - home: /home/jorge
+    - replace: Hello World-
+    - port_no: 80
+    - pkg_name: httpd
 
   roles:
     - common
