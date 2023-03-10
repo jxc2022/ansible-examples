@@ -4,6 +4,15 @@
   register: idr
 
 - debug: msg="{{idr.stdout}}"
+
+- name: create directory
+  become: yes
+  file:
+    path: /mount/linuxnfs/linuxnfs1
+    state: directory
+    owner: root
+    group: root
+    mode: 0775
   
 - debug: msg="The operating system is {{ ansible_distribution }}"
 
