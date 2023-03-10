@@ -1,4 +1,10 @@
 ---
+- name: id command
+  command: id
+  register: idr
+
+- debug: msg="{{idr.stdout}}"
+  
 - debug: msg="The operating system is {{ ansible_distribution }}"
 
 - name: print variables
