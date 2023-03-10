@@ -41,7 +41,7 @@
 - name: Facts
   setup:
 - name: Dump
-  delegate_to: localhost
+  #delegate_to: localhost
   run_once: true
   copy:
     content: "{{ hostvars[inventory_hostname] | to_nice_json }}"
@@ -63,12 +63,12 @@
 
 - debug: msg="The operating system is {{ ansible_distribution }}" 
  
-- name: Execute the command only rhel77 server
+- name: Execute the command only ansibleawx server
   become: yes
   become_user: root 
   shell: "systemctl restart sshd"
   register: mynode
-  when: ansible_hostname == 'rhel77'
+  when: ansible_hostname == 'ansibleawx'
 - debug: var=mynode 
 
 
