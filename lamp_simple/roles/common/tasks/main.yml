@@ -88,11 +88,11 @@
 - name: create directory
   file:
     path: /mount/linuxnfs/linuxnfs1
-    #state: directory
+    state: directory
     owner: root
     group: root
     mode: 0775
-    become: true
+    
     
         
 
