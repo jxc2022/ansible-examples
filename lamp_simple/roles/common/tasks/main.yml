@@ -53,7 +53,7 @@
 
 - name: test set fact
   set_fact:
-    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|lo.*|)[0-9]+') | list}}"
+    interfaces_list: "{{ ansible_interfaces | select('match', '^(eth|lo.*|ens)[0-9]+') | list}}"
  #   interface_list: "{{ ansible_interfaces | select('match','lo.*') | list | first }}"
 - debug:
     msg: The interface's list on "{{ ansible_hostname }}" is "{{ interfaces_list }}"
@@ -93,7 +93,7 @@
     boot: false
     state: mounted
     fstype: nfs
-  when: ansible_hostname == 'rhel77'
+  when: ansible_hostname == 'ansibleawx'
   register: mymnt
 - debug: var=mymnt
 
