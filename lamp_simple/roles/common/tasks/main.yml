@@ -92,6 +92,8 @@
     owner: root
     group: root
     mode: 0775
+    become: true
+    
         
 
 - name: mount nfs when "{{ansible_hostname}}"
