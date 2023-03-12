@@ -104,6 +104,7 @@
     owner: root
     group: root
     mode: 0775
+  ignore_errors: yes 
     
     
         
