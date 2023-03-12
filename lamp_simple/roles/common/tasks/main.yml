@@ -91,6 +91,12 @@
 #  register: mymnt
 # - debug: var=mymnt 
 
+- name: id command
+  command: id
+  register: idr1
+
+- debug: msg="{{idr1.stdout}}"
+
 - name: create directory
   file:
     path: /mount/linuxnfs/linuxnfs1
