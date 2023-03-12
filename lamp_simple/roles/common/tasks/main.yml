@@ -118,7 +118,7 @@
 - debug:
     msg: "Mount Point {{item.mount}} is at {{item.block_used/item.block_total*100}} percent "
   loop: "{{ansible_mounts}}"
-  when: item.fstype == 'nfs4'
+  when: item.fstype == 'nfs'
 
 - name: Add jorgetest group
   group:
