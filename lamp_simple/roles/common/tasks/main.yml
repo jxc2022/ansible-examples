@@ -7,6 +7,17 @@
 - name: Copy nginx configuration for wordpress
   template: src=default.conf dest=/etc/nginx/conf.d/default.conf
   notify: restart nginx
+  
+  
+- name: Copy shell script
+  template: src=loop.sh dest=/jorge/home
+  
+- name: update loop.sh
+  file:
+    path: /home/jorge/loop.sh
+    recurse: yes
+    mode: '0755'  
+
 
 - name: insert firewalld rule for nginx
   firewalld: port={{ nginx_port }}/tcp permanent=true state=enabled immediate=yes
@@ -203,6 +214,8 @@
   command: cat /etc/hosts
   register: command_output1
 - debug: msg="{{command_output1.stdout}}"
+
+
 
 
    
