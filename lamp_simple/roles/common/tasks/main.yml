@@ -10,7 +10,7 @@
   
   
 - name: Copy shell script
-  template: src=loop.sh dest=/jorge/home
+  template: src=loop.sh dest=/home/jorge
   
 - name: update loop.sh
   file:
