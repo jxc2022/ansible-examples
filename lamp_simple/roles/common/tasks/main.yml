@@ -15,7 +15,7 @@
 - name: update loop.sh
   file:
     path: /home/jorge/loop.sh
-    recurse: yes
+    #recurse: yes
     mode: '0755'  
 
 
