@@ -11,7 +11,7 @@
     - replace: Hello World-
     - port_no: 80
     - pkg_name: httpd
-
+    - ansible_python_interpreter: /usr/bin/python3.6
   roles:
     - common
 
