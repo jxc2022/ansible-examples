@@ -6,4 +6,4 @@ ntpserver: 192.168.1.2
 repository: https://github.com/bennojoy/mywebapp.git
 nginx_port: 8080
 server_hostname: localhost.localdomain
-ansible_python_interpreter: /usr/bin/python3.6
+
