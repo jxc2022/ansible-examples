@@ -1,4 +1,9 @@
 ---
+- command: "echo {{ ansible_python_interpreter }}"
+  register: out
+
+- debug:
+    var: out.stdout
 
 - name: get mac name from api
   uri:
