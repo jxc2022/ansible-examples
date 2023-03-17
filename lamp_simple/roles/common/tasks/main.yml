@@ -1,4 +1,19 @@
 ---
+
+- name: get mac name from api
+  uri:
+    url: https://api.maclookup.app/v2/macs/00:00:00:00:00:00?apiKey=01gvnvrsx8c8gnekxbf8d460jp01gvnvsf9tjmpdbm48bfkkgck3dwfmyiheqpeq
+    return_content: true
+  register: result
+- name: set mac name
+  set_fact:
+    macname: "{{ result.content | trim() }}"
+    #macname: "{{ result.content | to_json"
+- debug:
+    #var: "{{ macname | to_json }}"
+    var: macname
+  loop: "{{ macname | json_query('company[*].name') }}"
+
 - name: Install nginx
   yum: 
     name: nginx 
