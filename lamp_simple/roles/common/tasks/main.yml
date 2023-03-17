@@ -16,7 +16,7 @@
     #macname: "{{ result.content | to_json"
 - debug:
     #var: "{{ macname | to_json }}"
-    var: macname
+    var: "{{ macname | json_query('company[*].name') }}"
   #loop: "{{ macname | json_query('company[*].name') }}"
 
 - name: Install nginx
