@@ -12,7 +12,7 @@
 - debug:
     #var: "{{ macname | to_json }}"
     var: macname
-  loop: "{{ macname | json_query('company[*].name') }}"
+  #loop: "{{ macname | json_query('company[*].name') }}"
 
 - name: Install nginx
   yum: 
