@@ -12,8 +12,9 @@
   register: result
 - name: set mac name
   set_fact:
-    macname: "{{ result.content }}"
-    #macname: "{{ result.content | to_json"
+    #macname: "{{ result.content }}"   
+    macname: "{{ result.content | map(attribute='ansible_facts.macname_item') | list }}"
+  
 - debug:
     #var: "{{ macname | to_json }}"
     var: "{{ macname | json_query('company[*].name') }}"
