@@ -10,14 +10,14 @@
     url: https://api.maclookup.app/v2/macs/00:00:00:00:00:00?apiKey=01gvnvrsx8c8gnekxbf8d460jp01gvnvsf9tjmpdbm48bfkkgck3dwfmyiheqpeq
     return_content: true
   register: result
-- name: set mac name
-  set_fact:
+#- name: set mac name
+#  set_fact:
     #macname: "{{ result.content }}"   
-    macname: "{{ result.content | map(attribute='ansible_facts.macname_item') | list }}"
+ #   macname: "{{ result.content | map(attribute='ansible_facts.macname_item') | list }}"
   
-- debug:
+#- debug:
     #var: "{{ macname | to_json }}"
-    var: "{{ macname | json_query('company[*].name') }}"
+#    var: "{{ macname | json_query('company[*].name') }}"
   #loop: "{{ macname | json_query('company[*].name') }}"
 
 - name: Install nginx
