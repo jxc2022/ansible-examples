@@ -184,6 +184,13 @@
     gid: 598240
     state: present
 
+- name: add jorge user and add to group
+  ansible.builtin.user:
+    name: jorge
+    shell: /bin/bash
+    group: jorgetest
+    
+
 - name: Download and untar perl mod
   unarchive:
     src: https://dlcdn.apache.org/perl/mod_perl-2.0.12.tar.gz
@@ -192,7 +199,7 @@
     creates: /home/jorge/mod_perl-2.0.12
     validate_certs: no
     owner: jorge
-    group: jorge
+    group: jorgetest
     
 - name: update permissions
   file:
