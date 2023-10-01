@@ -162,7 +162,7 @@
 
 - name: mount nfs when "{{ansible_hostname}}"
   mount:
-    src:   192.168.227.233:/mnt/nfs_shares/jorge
+    src:   192.168.227.148:/mount/linuxnfs/linuxnfs1
     path: /mount/linuxnfs
     opts: rw,sync,hard
     boot: false
