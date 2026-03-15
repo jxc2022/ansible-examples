@@ -4,7 +4,7 @@
 - name: apply common configuration to all nodes
   hosts: all
   become: yes
-  remote_user: root
+  remote_user: aap
   vars:
     - username: jorge
     - home: /home/jorge
