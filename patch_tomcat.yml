@@ -1,0 +1,119 @@
+---
+- name: Patch Tomcat server with screenshots, report, and email
+  hosts: all
+  become: yes
+
+  vars:
+    tomcat_url: "http://192.168.1.66:8080/"
+    tomcat_service: tomcat
+    screenshot_dir: "/tmp"
+    report_dir: "/tmp"
+    email_to: "Jorge.x.chavez@gmail.com"
+
+  tasks:
+
+    - name: Ensure facts are gathered for timestamp
+      ansible.builtin.setup:
+
+    - name: Build timestamp string
+      ansible.builtin.set_fact:
+        ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
+
+    - name: Install Chromium for headless screenshots
+      ansible.builtin.dnf:
+        name: chromium
+        state: present
+
+    - name: Take BEFORE screenshot
+      ansible.builtin.command: >
+        chromium-browser --headless --disable-gpu
+        --screenshot={{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg
+        --window-size=1280,900
+        {{ tomcat_url }}
+      args:
+        creates: "{{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg"
+
+    - name: Stop Tomcat
+      ansible.builtin.systemd:
+        name: "{{ tomcat_service }}"
+        state: stopped
+
+    - name: Apply OS patches and capture result
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      register: patch_result
+
+    - name: Reboot server
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+
+    - name: Wait for server to return
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Start Tomcat
+      ansible.builtin.systemd:
+        name: "{{ tomcat_service }}"
+        state: started
+
+    - name: Wait for Tomcat port 8080
+      ansible.builtin.wait_for:
+        port: 8080
+        delay: 5
+        timeout: 60
+
+    - name: Take AFTER screenshot
+      ansible.builtin.command: >
+        chromium-browser --headless --disable-gpu
+        --screenshot={{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg
+        --window-size=1280,900
+        {{ tomcat_url }}
+
+    - name: Build HTML patch report
+      ansible.builtin.copy:
+        dest: "{{ report_dir }}/patch_report_{{ ts }}.html"
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Patch Report {{ ts }}</title>
+            <style>
+              body { font-family: Arial, sans-serif; }
+              h1 { font-size: 20px; }
+              pre { background: #f4f4f4; padding: 10px; }
+              ul { line-height: 1.4; }
+            </style>
+          </head>
+          <body>
+            <h1>Patch Report - {{ ts }}</h1>
+            <h2>Host: {{ inventory_hostname }}</h2>
+            <h3>Summary</h3>
+            <ul>
+              <li><strong>Changed:</strong> {{ patch_result.changed }}</li>
+              <li><strong>Return code:</strong> {{ patch_result.rc | default('n/a') }}</li>
+            </ul>
+            <h3>Raw dnf output</h3>
+            <pre>{{ patch_result.results | default([]) | join('\n') }}</pre>
+          </body>
+          </html>
+
+    - name: Email screenshots and report
+      ansible.builtin.mail:
+        host: localhost
+        port: 25
+        to: "{{ email_to }}"
+        subject: "Tomcat Patch Report - {{ inventory_hostname }} - {{ ts }}"
+        body: |
+          Tomcat patching completed.
+
+          Attached:
+          - Before screenshot
+          - After screenshot
+          - HTML patch report
+
+        attach:
+          - "{{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg"
+          - "{{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg"
+          - "{{ report_dir }}/patch_report_{{ ts }}.html"
