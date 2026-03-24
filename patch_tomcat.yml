@@ -101,7 +101,7 @@
 
     - name: Email screenshots and report
       community.general.mail:
-        host: localhost
+        host: 192.168.1.60
         port: 25
         to: "{{ email_to }}"
         subject: "Tomcat Patch Report - {{ inventory_hostname }} - {{ ts }}"
