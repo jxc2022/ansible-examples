@@ -100,7 +100,7 @@
           </html>
 
     - name: Email screenshots and report
-      ansible.builtin.mail:
+      community.general.mail:
         host: localhost
         port: 25
         to: "{{ email_to }}"
