@@ -26,7 +26,7 @@
 
     - name: Take BEFORE screenshot
       ansible.builtin.command: >
-        chromium-browser --headless --disable-gpu
+        chromium-browser --headless --no-sandbox --disable-gpu
         --screenshot={{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg
         --window-size=1280,900
         {{ tomcat_url }}
@@ -65,7 +65,7 @@
 
     - name: Take AFTER screenshot
       ansible.builtin.command: >
-        chromium-browser --headless --disable-gpu
+        chromium-browser --headless --no-sandbox --disable-gpu
         --screenshot={{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg
         --window-size=1280,900
         {{ tomcat_url }}
