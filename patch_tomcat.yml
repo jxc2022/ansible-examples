@@ -117,7 +117,7 @@
           - "{{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg"
           - "{{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg"
           - "{{ report_dir }}/patch_report_{{ ts }}.html"
-      delegate_to: aap.molly.labs
+      delegate_to: aap.molly.lab
       run_once: true
 
           
