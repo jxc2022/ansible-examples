@@ -9,7 +9,7 @@
     recipient: "jorge.x.chavez@gmail.com"
     gmail_user: "jorge.x.chavez@gmail.com"
     gmail_password: "abcd efgh ijkl mnop"
-    screenshot_script: "{{ playbook_dir }}/scripts/selenium.py"   # path to the script on localhost
+    screenshot_script: "/tmp/selenium.py"
 
   tasks:
     - name: Gather facts for timestamp
@@ -20,11 +20,9 @@
       ansible.builtin.set_fact:
         ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
 
-
-
-    - name: Copy screenshot script to localhost
+    - name: Copy screenshot script to EE
       ansible.builtin.copy:
-        src: screenshot.py
+        src: "scripts/selenium.py"
         dest: "{{ screenshot_script }}"
         mode: "0755"
       delegate_to: localhost
