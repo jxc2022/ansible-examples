@@ -20,23 +20,7 @@
       ansible.builtin.set_fact:
         ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
 
-    - name: Ensure Python selenium is installed on localhost
-      ansible.builtin.pip:
-        name:
-          - selenium
-          - webdriver-manager
-        state: present
-      delegate_to: localhost
-      run_once: true
 
-    - name: Ensure Chromium and chromedriver are installed on localhost
-      ansible.builtin.dnf:
-        name:
-          - chromium
-          - chromedriver
-        state: present
-      delegate_to: localhost
-      run_once: true
 
     - name: Copy screenshot script to localhost
       ansible.builtin.copy:
