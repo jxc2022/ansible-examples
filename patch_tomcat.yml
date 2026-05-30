@@ -7,7 +7,7 @@
     screenshot_dir: "/tmp"
     report_dir: "/tmp"
     recipient: "jorge.x.chavez@gmail.com"
-    gmail_user: "your-sender@gmail.com"
+    gmail_user: "jorge.x.chavez@gmail.com"
     gmail_password: "abcd efgh ijkl mnop"
     screenshot_script: "{{ playbook_dir }}/scripts/selenium.py"   # path to the script on localhost
 
