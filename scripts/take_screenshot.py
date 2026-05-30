@@ -2,17 +2,21 @@ import os
 import sys
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Run Chrome in headless mode
 options = Options()
 options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--ignore-certificate-errors")
+options.add_argument("--disable-dev-shm-usage")
 options.accept_insecure_certs = True
 
-# Start WebDriver
-driver = webdriver.Chrome(options=options)
+# Auto match chromedriver version to chrome version
+service = Service(ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service, options=options)
 driver.set_window_size(1500, 1000)
 
 # Get URL from environment variable
@@ -24,7 +28,7 @@ if not weburl:
     sys.exit(1)
 
 # Get screenshot path from environment variable
-screenshot_path = os.environ.get("SCREENSHOT_PATH", "./screenshots/webcheck.png")
+screenshot_path = os.environ.get("SCREENSHOT_PATH", "/tmp/screenshot.png")
 os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
 
 print(f"Opening: {weburl}")
