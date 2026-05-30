@@ -1,0 +1,21 @@
+# install ansible-builder if not already
+pip3 install ansible-builder
+
+# build the EE
+cd ee/
+ansible-builder build \
+  --tag 192.168.1.60/custom-ee-selenium:latest \
+  --file execution-environment.yml
+
+# push to your registry (PAH or quay.io)
+podman push 192.168.1.60/custom-ee-selenium:latest# install ansible-builder if not already
+pip3 install ansible-builder
+
+# build the EE
+cd ee/
+ansible-builder build \
+  --tag 192.168.1.60/custom-ee-selenium:latest \
+  --file execution-environment.yml
+
+# push to your registry (PAH or quay.io)
+podman push 192.168.1.60/custom-ee-selenium:latest

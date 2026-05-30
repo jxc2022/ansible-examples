@@ -1,0 +1,17 @@
+version: 3
+
+build_arg_defaults:
+  EE_BASE_IMAGE: registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel9:latest
+
+dependencies:
+  python_interpreter:
+    package_system: python311
+  python:
+    - requirements.txt
+  galaxy:
+    collections:
+      - community.general
+
+additional_build_steps:
+  prepend_final:
+    - RUN dnf install -y chromium chromedriver && dnf clean all
