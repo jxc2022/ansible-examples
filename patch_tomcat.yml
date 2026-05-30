@@ -21,12 +21,12 @@
         ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
 
     - name: Copy screenshot script to EE
-        ansible.builtin.copy:
+      ansible.builtin.copy:
           src: "scripts/take_screenshot.py"
           dest: "{{ screenshot_script }}"
           mode: "0755"
-        delegate_to: localhost
-        run_once: true
+      delegate_to: localhost
+      run_once: true
 
     - name: Take BEFORE screenshot
       ansible.builtin.command:
