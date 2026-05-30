@@ -1,5 +1,5 @@
 - name: Patch Millennium and report
-  hosts: linux_servers
+  hosts: centos9
   gather_facts: false
   vars:
     tomcat_url: "http://192.168.1.66:80/"
