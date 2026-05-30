@@ -4,7 +4,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 
 # Run Chrome in headless mode
 options = Options()
@@ -14,8 +13,8 @@ options.add_argument("--ignore-certificate-errors")
 options.add_argument("--disable-dev-shm-usage")
 options.accept_insecure_certs = True
 
-# Auto match chromedriver version to chrome version
-service = Service(ChromeDriverManager().install())
+# Point directly to chromedriver in the EE
+service = Service("/usr/local/bin/chromedriver")
 driver = webdriver.Chrome(service=service, options=options)
 driver.set_window_size(1500, 1000)
 
