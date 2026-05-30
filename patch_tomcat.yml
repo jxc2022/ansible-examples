@@ -9,7 +9,7 @@
     recipient: "jorge.x.chavez@gmail.com"
     gmail_user: "jorge.x.chavez@gmail.com"
     gmail_password: "abcd efgh ijkl mnop"
-    screenshot_script: "/tmp/selenium.py"
+    screenshot_script: "/tmp/take_screenshot.py"
 
   tasks:
     - name: Gather facts for timestamp
