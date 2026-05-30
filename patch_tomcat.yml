@@ -1,44 +1,66 @@
----
-- name: Patch Tomcat server with screenshots, report, and email
-  hosts: all
-  become: yes
-
+- name: Patch Millennium and report
+  hosts: linux_servers
+  gather_facts: false
   vars:
-    tomcat_url: "http://192.168.1.66:8080/"
+    tomcat_url: "http://192.168.1.66:80/"
     tomcat_service: tomcat
     screenshot_dir: "/tmp"
     report_dir: "/tmp"
-    email_to: "Jorge.x.chavez@gmail.com"
+    recipient: "jorge.x.chavez@gmail.com"
+    gmail_user: "your-sender@gmail.com"
+    gmail_password: "abcd efgh ijkl mnop"
+    screenshot_script: "/opt/ansible/screenshot.py"   # path to the script on localhost
 
   tasks:
-
-    - name: Ensure facts are gathered for timestamp
+    - name: Gather facts for timestamp
       ansible.builtin.setup:
+        gather_subset: ["date_time"]
 
     - name: Build timestamp string
       ansible.builtin.set_fact:
         ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
 
-    - name: Install Chromium for headless screenshots
-      ansible.builtin.dnf:
-        name: chromium
+    - name: Ensure Python selenium is installed on localhost
+      ansible.builtin.pip:
+        name:
+          - selenium
+          - webdriver-manager
         state: present
+      delegate_to: localhost
+      run_once: true
+
+    - name: Ensure Chromium and chromedriver are installed on localhost
+      ansible.builtin.dnf:
+        name:
+          - chromium
+          - chromedriver
+        state: present
+      delegate_to: localhost
+      run_once: true
+
+    - name: Copy screenshot script to localhost
+      ansible.builtin.copy:
+        src: screenshot.py
+        dest: "{{ screenshot_script }}"
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
 
     - name: Take BEFORE screenshot
-      ansible.builtin.command: >
-        chromium-browser --headless --no-sandbox --disable-gpu
-        --screenshot={{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg
-        --window-size=1280,900
-        {{ tomcat_url }}
-      args:
-        creates: "{{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg"
+      ansible.builtin.command:
+        cmd: python3 {{ screenshot_script }}
+      environment:
+        WEBURL: "{{ tomcat_url }}"
+        SCREENSHOT_PATH: "{{ screenshot_dir }}/tomcat_before_{{ ts }}.png"
+      delegate_to: localhost
+      run_once: true
 
     - name: Stop Tomcat
       ansible.builtin.systemd:
         name: "{{ tomcat_service }}"
         state: stopped
 
-    - name: Apply OS patches and capture result
+    - name: Apply OS patches
       ansible.builtin.dnf:
         name: "*"
         state: latest
@@ -48,7 +70,7 @@
       ansible.builtin.reboot:
         reboot_timeout: 600
 
-    - name: Wait for server to return
+    - name: Wait for connection after reboot
       ansible.builtin.wait_for_connection:
         timeout: 300
 
@@ -57,33 +79,47 @@
         name: "{{ tomcat_service }}"
         state: started
 
-    - name: Wait for Tomcat port 8080
+    - name: Wait for Tomcat port 80
       ansible.builtin.wait_for:
-        port: 8080
-        delay: 5
-        timeout: 60
+        host: "{{ ansible_host }}"
+        port: 80
+        delay: 10
+        timeout: 90
+
+    - name: Verify Tomcat HTTP response
+      ansible.builtin.uri:
+        url: "{{ tomcat_url }}"
+        status_code: 200
+        timeout: 30
+      register: tomcat_health
+      retries: 5
+      delay: 10
+      until: tomcat_health.status == 200
+      delegate_to: localhost
 
     - name: Take AFTER screenshot
-      ansible.builtin.command: >
-        chromium-browser --headless --no-sandbox --disable-gpu
-        --screenshot={{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg
-        --window-size=1280,900
-        {{ tomcat_url }}
+      ansible.builtin.command:
+        cmd: python3 {{ screenshot_script }}
+      environment:
+        WEBURL: "{{ tomcat_url }}"
+        SCREENSHOT_PATH: "{{ screenshot_dir }}/tomcat_after_{{ ts }}.png"
+      delegate_to: localhost
+      run_once: true
 
     - name: Build HTML patch report
       ansible.builtin.copy:
-        dest: "{{ report_dir }}/patch_report_{{ ts }}.html"
+        dest: "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts }}.html"
         content: |
           <!DOCTYPE html>
           <html>
           <head>
             <meta charset="utf-8">
-            <title>Patch Report {{ ts }}</title>
+            <title>Patch Report - {{ inventory_hostname }} - {{ ts }}</title>
             <style>
-              body { font-family: Arial, sans-serif; }
-              h1 { font-size: 20px; }
-              pre { background: #f4f4f4; padding: 10px; }
-              ul { line-height: 1.4; }
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              h1, h2, h3 { color: #333; }
+              pre { background: #f4f4f4; padding: 10px; overflow-x: auto; }
+              .ok { color: green; } .fail { color: red; }
             </style>
           </head>
           <body>
@@ -91,32 +127,39 @@
             <h2>Host: {{ inventory_hostname }}</h2>
             <h3>Summary</h3>
             <ul>
-              <li><strong>Changed:</strong> {{ patch_result.changed }}</li>
-              <li><strong>Return code:</strong> {{ patch_result.rc | default('n/a') }}</li>
+              <li><strong>Changed:</strong>
+                <span class="{{ 'ok' if patch_result.changed else '' }}">
+                  {{ patch_result.changed }}
+                </span>
+              </li>
+              <li><strong>Tomcat health after patch:</strong>
+                <span class="{{ 'ok' if tomcat_health.status == 200 else 'fail' }}">
+                  HTTP {{ tomcat_health.status }}
+                </span>
+              </li>
             </ul>
-            <h3>Raw dnf output</h3>
+            <h3>Packages updated</h3>
             <pre>{{ patch_result.results | default([]) | join('\n') }}</pre>
           </body>
           </html>
+      delegate_to: localhost
 
-    - name: Email screenshots and report
+    - name: Email report per host
       community.general.mail:
-        host: 192.168.1.60
-        port: 25
-        to: "{{ email_to }}"
+        host: "smtp.gmail.com"
+        port: 587
+        username: "{{ gmail_user }}"
+        password: "{{ gmail_password }}"
+        to: "{{ recipient }}"
         subject: "Tomcat Patch Report - {{ inventory_hostname }} - {{ ts }}"
         body: |
-          Tomcat patching completed.
+          Patching completed for {{ inventory_hostname }}.
+          Tomcat health check: HTTP {{ tomcat_health.status }}
 
-          Attached:
-          - Before screenshot
-          - After screenshot
-          - HTML patch report
-
+          Attached: before/after screenshots and HTML report.
+        secure: starttls
         attach:
-          - "{{ screenshot_dir }}/tomcat_before_{{ ts }}.jpg"
-          - "{{ screenshot_dir }}/tomcat_after_{{ ts }}.jpg"
-          - "{{ report_dir }}/patch_report_{{ ts }}.html"
-
-
-          
+          - "{{ screenshot_dir }}/tomcat_before_{{ ts }}.png"
+          - "{{ screenshot_dir }}/tomcat_after_{{ ts }}.png"
+          - "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts }}.html"
+      delegate_to: localhost
