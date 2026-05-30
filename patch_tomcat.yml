@@ -17,15 +17,15 @@
       ansible.builtin.setup:
         gather_subset: ["date_time"]
 
-    - name: Build timestamp string
+    - name: Build BEFORE timestamp
       ansible.builtin.set_fact:
         ts: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
 
     - name: Copy screenshot script to EE
       ansible.builtin.copy:
-          src: "scripts/take_screenshot.py"
-          dest: "{{ screenshot_script }}"
-          mode: "0755"
+        src: "scripts/take_screenshot.py"
+        dest: "{{ screenshot_script }}"
+        mode: "0755"
       delegate_to: localhost
       run_once: true
 
@@ -42,8 +42,6 @@
       ansible.builtin.systemd:
         name: "{{ tomcat_service }}"
         state: stopped
-      async: 60
-      poll: 5
 
     - name: Apply OS patches
       ansible.builtin.dnf:
@@ -59,12 +57,20 @@
       ansible.builtin.wait_for_connection:
         timeout: 300
 
+    - name: Gather facts for AFTER timestamp
+      ansible.builtin.setup:
+        gather_subset: ["date_time"]
+
+    - name: Build AFTER timestamp
+      ansible.builtin.set_fact:
+        ts_after: "{{ ansible_date_time.iso8601_basic | regex_replace('T','_') | regex_replace('Z','') }}"
+
     - name: Start Tomcat
       ansible.builtin.systemd:
         name: "{{ tomcat_service }}"
         state: started
 
-    - name: Wait for Tomcat port 80
+    - name: Wait for Tomcat port 8080
       ansible.builtin.wait_for:
         host: "{{ ansible_host }}"
         port: 8080
@@ -87,19 +93,19 @@
         cmd: python3 {{ screenshot_script }}
       environment:
         WEBURL: "{{ tomcat_url }}"
-        SCREENSHOT_PATH: "{{ screenshot_dir }}/tomcat_after_{{ ts }}.png"
+        SCREENSHOT_PATH: "{{ screenshot_dir }}/tomcat_after_{{ ts_after }}.png"
       delegate_to: localhost
       run_once: true
 
     - name: Build HTML patch report
       ansible.builtin.copy:
-        dest: "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts }}.html"
+        dest: "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts_after }}.html"
         content: |
           <!DOCTYPE html>
           <html>
           <head>
             <meta charset="utf-8">
-            <title>Patch Report - {{ inventory_hostname }} - {{ ts }}</title>
+            <title>Patch Report - {{ inventory_hostname }} - {{ ts_after }}</title>
             <style>
               body { font-family: Arial, sans-serif; margin: 20px; }
               h1, h2, h3 { color: #333; }
@@ -108,8 +114,13 @@
             </style>
           </head>
           <body>
-            <h1>Patch Report - {{ ts }}</h1>
+            <h1>Patch Report - {{ ts_after }}</h1>
             <h2>Host: {{ inventory_hostname }}</h2>
+            <h3>Timestamps</h3>
+            <ul>
+              <li><strong>Before patch:</strong> {{ ts }}</li>
+              <li><strong>After patch:</strong> {{ ts_after }}</li>
+            </ul>
             <h3>Summary</h3>
             <ul>
               <li><strong>Changed:</strong>
@@ -136,15 +147,17 @@
         username: "{{ gmail_user }}"
         password: "{{ gmail_password }}"
         to: "{{ recipient }}"
-        subject: "Tomcat Patch Report - {{ inventory_hostname }} - {{ ts }}"
+        subject: "Tomcat Patch Report - {{ inventory_hostname }} - {{ ts_after }}"
         body: |
           Patching completed for {{ inventory_hostname }}.
           Tomcat health check: HTTP {{ tomcat_health.status }}
+          Before patch: {{ ts }}
+          After patch: {{ ts_after }}
 
           Attached: before/after screenshots and HTML report.
         secure: starttls
         attach:
           - "{{ screenshot_dir }}/tomcat_before_{{ ts }}.png"
-          - "{{ screenshot_dir }}/tomcat_after_{{ ts }}.png"
-          - "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts }}.html"
+          - "{{ screenshot_dir }}/tomcat_after_{{ ts_after }}.png"
+          - "{{ report_dir }}/patch_report_{{ inventory_hostname }}_{{ ts_after }}.html"
       delegate_to: localhost
