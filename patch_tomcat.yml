@@ -41,6 +41,8 @@
       ansible.builtin.systemd:
         name: "{{ tomcat_service }}"
         state: stopped
+      async: 60
+      poll: 5
 
     - name: Apply OS patches
       ansible.builtin.dnf:
