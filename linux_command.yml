@@ -74,7 +74,7 @@
             safe_commands_list: >-
               {{ audit_commands_list | select('match', '^(' + allowed_commands | join('|') + ')') | list }}
       vars:
-            allowed_commands:
+        allowed_commands:
               - uptime
               - df
               - free
@@ -112,9 +112,8 @@
       register: audit_results
       changed_when: false
       failed_when: false
-      loop: "{{ audit_commands_list }}"
+      loop: "{{ safe_commands_list }}"
       when: connectivity_status == 'SUCCESS'
-
     # ----------------------------------------------------------
     # 3. AGGREGATE PER-HOST RESULTS
     # ----------------------------------------------------------
