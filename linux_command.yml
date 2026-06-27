@@ -10,6 +10,10 @@
 
   vars:
     audit_command: "{{ audit_command | mandatory }}"
+    recipient: {{recipient | mandatory }}
+    gmail_user: "jorge.x.chavez@gmail.com"
+    gmail_password: "nnmk dzsm ylgf tsur"
+    report_local_dir: "/tmp/reports"
 
   tasks:
 
