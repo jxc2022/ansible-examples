@@ -75,38 +75,38 @@
               {{ audit_commands_list | select('match', '^(' + allowed_commands | join('|') + ')') | list }}
       vars:
         allowed_commands:
-              - uptime
-              - df
-              - free
-              - lscpu
-              - who
-              - lastlog
-              - ps
-              - ss
-              - cat
-              - tail
-              - grep
-              - lsblk
-              - iostat
-              - netstat
-              - id
-              - chage
-              - getent
-              - uname
-              - hostname
-              - ip
-              - mount
-              - systemctl
-              - journalctl
-              - top
-              - vmstat
-              - sar
-              - dmesg
-              - find
-              - ls
-              - stat
-              - du        
-
+          - uptime
+          - df
+          - free
+          - lscpu
+          - who
+          - lastlog
+          - ps
+          - ss
+          - cat
+          - tail
+          - grep
+          - lsblk
+          - iostat
+          - netstat
+          - id
+          - chage
+          - getent
+          - uname
+          - hostname
+          - ip
+          - mount
+          - systemctl
+          - journalctl
+          - top
+          - vmstat
+          - sar
+          - dmesg
+          - find
+          - ls
+          - stat
+          - du
+          
     - name: Run audit commands
       ansible.builtin.shell: "{{ item }}"
       register: audit_results
