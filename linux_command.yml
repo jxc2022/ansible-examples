@@ -10,10 +10,6 @@
 
   vars:
     audit_command: "{{ audit_command | mandatory }}"
-    recipient: "{{ recipient | mandatory }}"
-    gmail_user: "jorge.x.chavez@gmail.com"
-    gmail_password: "nnmk dzsm ylgf tsur"
-    report_local_dir: "/tmp/reports"
 
   tasks:
 
@@ -68,10 +64,10 @@
 
   vars:
     audit_command:    "{{ audit_command | mandatory }}"
-    report_local_dir: "{{ playbook_dir }}/reports"
-    gmail_user:       ""
-    gmail_password:   ""
     recipient:        "{{ recipient | mandatory }}"
+    gmail_user:       "jorge.x.chavez@gmail.com"
+    gmail_password:  "nnmk dzsm ylgf tsur"
+    report_local_dir: "/tmp/reports"
 
   tasks:
 
@@ -401,8 +397,8 @@
         port:     587
         username: "{{ gmail_user }}"
         password: "{{ gmail_password }}"
-        to:       "{{ recipient }}"
         sender:   "{{ gmail_user }}"
+        to:       "{{ recipient }}"
         subject:  "Audit Report — {{ audit_command }} — {{ total_hosts }} hosts — {{ run_ts }}"
         body: |
           Ansible audit report for command: '{{ audit_command }}'
