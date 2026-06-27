@@ -5,7 +5,7 @@
 - name: Run audit commands on all hosts
   hosts: all
   gather_facts: true
-  become: true
+  become: false
   ignore_unreachable: true
 
   vars:
@@ -26,9 +26,48 @@
         connectivity_status: "{{ 'SUCCESS' if (ping_result.ping | default('')) == 'pong' else 'FAILED' }}"
         connectivity_time:   "{{ ansible_date_time.iso8601 | default('N/A') }}"
 
+# ----------------------------------------------------------
+    # 2. VALIDATE COMMANDS AGAINST WHITELIST
     # ----------------------------------------------------------
-    # 2. RUN ALL COMMANDS
-    # ----------------------------------------------------------
+    - name: Validate commands are in allowed list
+      ansible.builtin.fail:
+        msg: "Command '{{ item }}' is not allowed. First word '{{ item.split()[0] }}' not in whitelist."
+      when: item.split()[0] not in allowed_commands
+      loop: "{{ audit_commands_list }}"
+      vars:
+        allowed_commands:
+          - uptime
+          - df
+          - free
+          - lscpu
+          - who
+          - lastlog
+          - ps
+          - ss
+          - cat
+          - tail
+          - grep
+          - lsblk
+          - iostat
+          - netstat
+          - id
+          - chage
+          - getent
+          - uname
+          - hostname
+          - ip
+          - mount
+          - systemctl
+          - journalctl
+          - top
+          - vmstat
+          - sar
+          - dmesg
+          - find
+          - ls
+          - stat
+          - du
+        
     - name: Run audit commands
       ansible.builtin.shell: "{{ item }}"
       register: audit_results
