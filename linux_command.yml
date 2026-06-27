@@ -30,7 +30,7 @@
     # 2. RUN ALL COMMANDS
     # ----------------------------------------------------------
     - name: Run audit commands
-      ansible.builtin.command: "{{ item }}"
+      ansible.builtin.shell: "{{ item }}"
       register: audit_results
       changed_when: false
       failed_when: false
