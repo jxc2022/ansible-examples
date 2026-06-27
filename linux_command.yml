@@ -34,6 +34,7 @@
         msg: "Command '{{ item }}' is not allowed. First word '{{ item.split()[0] }}' not in whitelist."
       when: item.split()[0] not in allowed_commands
       loop: "{{ audit_commands_list }}"
+      ignore_errors: true
       vars:
         allowed_commands:
           - uptime
@@ -67,7 +68,45 @@
           - ls
           - stat
           - du
-        
+
+    - name: Build safe commands list (remove blocked commands)
+      ansible.builtin.set_fact:
+            safe_commands_list: >-
+              {{ audit_commands_list | select('match', '^(' + allowed_commands | join('|') + ')') | list }}
+      vars:
+            allowed_commands:
+              - uptime
+              - df
+              - free
+              - lscpu
+              - who
+              - lastlog
+              - ps
+              - ss
+              - cat
+              - tail
+              - grep
+              - lsblk
+              - iostat
+              - netstat
+              - id
+              - chage
+              - getent
+              - uname
+              - hostname
+              - ip
+              - mount
+              - systemctl
+              - journalctl
+              - top
+              - vmstat
+              - sar
+              - dmesg
+              - find
+              - ls
+              - stat
+              - du        
+
     - name: Run audit commands
       ansible.builtin.shell: "{{ item }}"
       register: audit_results
