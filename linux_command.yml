@@ -402,6 +402,7 @@
         username: "{{ gmail_user }}"
         password: "{{ gmail_password }}"
         to:       "{{ recipient }}"
+        sender:   "{{ gmail_user }}"
         subject:  "Audit Report — {{ audit_command }} — {{ total_hosts }} hosts — {{ run_ts }}"
         body: |
           Ansible audit report for command: '{{ audit_command }}'
