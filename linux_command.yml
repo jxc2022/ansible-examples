@@ -1,15 +1,16 @@
 ---
 # ==============================================================
-# PLAY 1 — Run command on all target hosts
+# PLAY 1 — Run all audit commands on target hosts
 # ==============================================================
-- name: Run audit command on all hosts
+- name: Run audit commands on all hosts
   hosts: all
   gather_facts: true
   become: true
   ignore_unreachable: true
 
   vars:
-    audit_command: "{{ audit_command | mandatory }}"
+    audit_command:       "{{ audit_command | mandatory }}"
+    audit_commands_list: "{{ audit_command.splitlines() | map('trim') | reject('match', '^$') | list }}"
 
   tasks:
 
@@ -26,13 +27,14 @@
         connectivity_time:   "{{ ansible_date_time.iso8601 | default('N/A') }}"
 
     # ----------------------------------------------------------
-    # 2. RUN THE COMMAND
+    # 2. RUN ALL COMMANDS
     # ----------------------------------------------------------
-    - name: Run audit command — {{ audit_command }}
-      ansible.builtin.command: "{{ audit_command }}"
-      register: audit_result
+    - name: Run audit commands
+      ansible.builtin.command: "{{ item }}"
+      register: audit_results
       changed_when: false
       failed_when: false
+      loop: "{{ audit_commands_list }}"
       when: connectivity_status == 'SUCCESS'
 
     # ----------------------------------------------------------
@@ -48,10 +50,7 @@
           connectivity:      "{{ connectivity_status }}"
           connectivity_time: "{{ connectivity_time }}"
           auth_status:       "SUCCESS"
-          audit_command:     "{{ audit_command }}"
-          audit_stdout:      "{{ audit_result.stdout | default('No output') }}"
-          audit_stderr:      "{{ audit_result.stderr | default('') }}"
-          audit_rc:          "{{ audit_result.rc | default('N/A') }}"
+          audit_commands:    "{{ audit_results.results | default([]) }}"
 
 
 # ==============================================================
@@ -63,11 +62,12 @@
   become: false
 
   vars:
-    audit_command:    "{{ audit_command | mandatory }}"
-    recipient:        "{{ recipient | mandatory }}"
-    gmail_user:       "jorge.x.chavez@gmail.com"
-    gmail_password:  "nnmk dzsm ylgf tsur"
-    report_local_dir: "/tmp/reports"
+    audit_command:       "{{ audit_command | mandatory }}"
+    audit_commands_list: "{{ audit_command.splitlines() | map('trim') | reject('match', '^$') | list }}"
+    recipient:           "{{ recipient | mandatory }}"
+    gmail_user:          "jorge.x.chavez@gmail.com"
+    gmail_password:      "your_new_app_password_here"
+    report_local_dir:    "/tmp/reports"
 
   tasks:
 
@@ -121,10 +121,7 @@
           connectivity_time: "N/A"
           auth_status:       "{{ 'FAILED' if _is_auth_fail else 'N/A' }}"
           auth_fail_msg:     "{{ _raw_msg if _is_auth_fail else '' }}"
-          audit_command:     "{{ audit_command }}"
-          audit_stdout:      "N/A"
-          audit_stderr:      "N/A"
-          audit_rc:          "N/A"
+          audit_commands:    []
       loop: "{{ groups['all'] }}"
       when: hostvars[item]['host_audit_report'] is not defined
 
@@ -134,7 +131,6 @@
         hosts_connected:   "{{ all_audit_reports | selectattr('connectivity', 'equalto', 'SUCCESS')     | list | length }}"
         hosts_unreachable: "{{ all_audit_reports | selectattr('connectivity', 'equalto', 'UNREACHABLE') | list | length }}"
         hosts_auth_failed: "{{ all_audit_reports | selectattr('auth_status',  'equalto', 'FAILED')      | list | length }}"
-        hosts_cmd_ok:      "{{ all_audit_reports | selectattr('audit_rc',     'equalto', '0')           | list | length }}"
 
     # ----------------------------------------------------------
     # 2. RENDER HTML REPORT
@@ -149,7 +145,7 @@
           <head>
             <meta charset="UTF-8"/>
             <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-            <title>Audit Report — {{ audit_command }} — {{ run_ts }}</title>
+            <title>Audit Report — {{ run_ts }}</title>
             <style>
               :root {
                 --bg:      #0f1117; --surface: #1a1d27; --border: #2a2d3e;
@@ -164,8 +160,9 @@
               .page-header { border-left: 4px solid var(--accent); padding-left: 1.25rem; margin-bottom: 2.5rem; }
               .page-header .eyebrow { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: .4rem; }
               .page-header h1 { font-size: 1.75rem; font-weight: 700; }
-              .page-header .cmd { font-family: var(--mono); background: var(--surface); border: 1px solid var(--border); padding: .4rem .85rem; border-radius: 6px; font-size: 1rem; color: var(--accent); display: inline-block; margin-top: .5rem; }
               .page-header .meta { color: var(--muted); font-size: 13px; margin-top: .5rem; }
+              .cmd-list { margin-top: .75rem; display: flex; flex-wrap: wrap; gap: .5rem; }
+              .cmd-pill { font-family: var(--mono); background: var(--surface); border: 1px solid var(--border); padding: .25rem .75rem; border-radius: 999px; font-size: 12px; color: var(--accent); }
               .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }
               .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; }
               .stat-card .title { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: .4rem; }
@@ -187,26 +184,32 @@
               .host-card-header h2 { font-size: 1rem; font-weight: 700; }
               .host-card-header .sub { color: var(--muted); font-size: 12px; }
               .host-body { padding: 1.25rem; }
-              .host-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+              .host-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
               @media (max-width: 700px) { .host-meta { grid-template-columns: 1fr; } }
               .kv-table { width: 100%; border-collapse: collapse; }
               .kv-table th, .kv-table td { padding: .4rem .6rem; font-size: 12px; border-bottom: 1px solid var(--border); text-align: left; }
               .kv-table th { color: var(--muted); font-weight: 500; width: 40%; }
               .kv-table td { font-family: var(--mono); word-break: break-all; }
               .kv-table tr:last-child th, .kv-table tr:last-child td { border-bottom: none; }
-              .output-label { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 600; margin-bottom: .5rem; }
+              .cmd-block { margin-bottom: 1.5rem; }
+              .cmd-block:last-child { margin-bottom: 0; }
+              .cmd-header { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem; }
+              .cmd-label { font-family: var(--mono); font-size: 12px; color: var(--accent); background: rgba(79,142,247,.08); border: 1px solid rgba(79,142,247,.2); padding: .2rem .65rem; border-radius: 4px; }
+              .cmd-rc { font-size: 11px; font-weight: 600; }
+              .cmd-rc.ok  { color: var(--green); }
+              .cmd-rc.err { color: var(--red);   }
               pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; font-family: var(--mono); font-size: 12px; white-space: pre; overflow-x: auto; line-height: 1.6; }
+              pre.stderr { border-color: rgba(248,113,113,.3); color: var(--red); margin-top: .4rem; }
               .badge { display: inline-block; padding: .12rem .55rem; border-radius: 999px; font-size: 11px; font-weight: 600; }
               .badge-green  { background: rgba(52,211,153,.15);  color: var(--green);  }
               .badge-red    { background: rgba(248,113,113,.15); color: var(--red);    }
               .badge-yellow { background: rgba(251,191,36,.15);  color: var(--yellow); }
               .badge-orange { background: rgba(251,146,60,.15);  color: var(--orange); }
               .badge-blue   { background: rgba(79,142,247,.15);  color: var(--accent); }
-              .alert-box { margin-top: .75rem; padding: .65rem .85rem; border-radius: 6px; font-size: 12px; }
+              .alert-box { padding: .65rem .85rem; border-radius: 6px; font-size: 12px; }
               .alert-orange { background: rgba(251,146,60,.08); border: 1px solid rgba(251,146,60,.25); color: var(--orange); }
               .alert-red    { background: rgba(248,113,113,.08); border: 1px solid rgba(248,113,113,.25); color: var(--red); }
-              .stderr { margin-top: .75rem; }
-              .stderr pre { border-color: rgba(248,113,113,.3); color: var(--red); }
+              .divider { border: none; border-top: 1px solid var(--border); margin: 1.25rem 0; }
               footer { margin-top: 3rem; text-align: center; color: var(--muted); font-size: 12px; }
             </style>
           </head>
@@ -214,11 +217,16 @@
 
             <div class="page-header">
               <div class="eyebrow">Ansible Automation — Linux Audit Report</div>
-              <h1>Command Output Report</h1>
-              <div class="cmd">$ {{ audit_command }}</div>
+              <h1>Command Audit Report</h1>
+              <div class="cmd-list">
+                {% for cmd in audit_commands_list %}
+                <span class="cmd-pill">$ {{ cmd }}</span>
+                {% endfor %}
+              </div>
               <div class="meta">
                 Generated: <strong>{{ ansible_date_time.iso8601 }}</strong>
                 &nbsp;·&nbsp; Hosts targeted: <strong>{{ total_hosts }}</strong>
+                &nbsp;·&nbsp; Commands: <strong>{{ audit_commands_list | length }}</strong>
               </div>
             </div>
 
@@ -241,8 +249,8 @@
                 <div class="value {{ 'orange' if hosts_auth_failed | int > 0 else 'green' }}">{{ hosts_auth_failed }}</div>
               </div>
               <div class="stat-card">
-                <div class="title">Command OK</div>
-                <div class="value {{ 'green' if hosts_cmd_ok | int == total_hosts | int else 'yellow' }}">{{ hosts_cmd_ok }} / {{ total_hosts }}</div>
+                <div class="title">Commands Run</div>
+                <div class="value blue">{{ audit_commands_list | length }}</div>
               </div>
             </div>
 
@@ -257,7 +265,7 @@
                     <th>OS</th>
                     <th>Connectivity</th>
                     <th>Auth</th>
-                    <th>Command RC</th>
+                    <th>Commands</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -280,9 +288,11 @@
                       </span>
                     </td>
                     <td>
-                      <span class="badge {{ 'badge-green' if h.audit_rc == '0' else 'badge-red' }}">
-                        {{ 'OK (rc=0)' if h.audit_rc == '0' else 'rc=' ~ h.audit_rc }}
-                      </span>
+                      {% if h.audit_commands | length > 0 %}
+                        <span class="badge badge-green">{{ h.audit_commands | length }} ran</span>
+                      {% else %}
+                        <span class="badge badge-yellow">skipped</span>
+                      {% endif %}
                     </td>
                   </tr>
                   {% endfor %}
@@ -290,7 +300,7 @@
               </table>
             </div>
 
-            <!-- Per-host output cards -->
+            <!-- Per-host cards -->
             {% for h in all_audit_reports %}
             <div class="host-card">
               <div class="host-card-header">
@@ -301,12 +311,12 @@
                 <span class="badge
                   {% if h.connectivity == 'UNREACHABLE' %}badge-red
                   {% elif h.auth_status == 'FAILED' %}badge-orange
-                  {% elif h.audit_rc == '0' %}badge-green
+                  {% elif h.audit_commands | length > 0 %}badge-green
                   {% else %}badge-yellow{% endif %}"
                   style="margin-left:auto">
                   {{ 'UNREACHABLE' if h.connectivity == 'UNREACHABLE' else
                      'AUTH FAILED'  if h.auth_status  == 'FAILED' else
-                     'OK'           if h.audit_rc     == '0' else 'ERROR' }}
+                     'OK'           if h.audit_commands | length > 0 else 'SKIPPED' }}
                 </span>
               </div>
 
@@ -339,23 +349,30 @@
                   <div>
                     <table class="kv-table">
                       <tr><th>OS</th><td>{{ h.os }}</td></tr>
-                      <tr><th>Command</th><td>{{ h.audit_command }}</td></tr>
-                      <tr><th>Return Code</th><td>{{ h.audit_rc }}</td></tr>
+                      <tr><th>Connectivity</th><td>{{ h.connectivity }}</td></tr>
+                      <tr><th>Check Time</th><td>{{ h.connectivity_time }}</td></tr>
                     </table>
                   </div>
                 </div>
 
-                <!-- Command output -->
-                <div class="output-label">Command Output</div>
-                <pre>{{ h.audit_stdout if h.audit_stdout else '(no output)' }}</pre>
+                <hr class="divider">
 
-                <!-- stderr if any -->
-                {% if h.audit_stderr %}
-                <div class="stderr">
-                  <div class="output-label" style="color:var(--red);margin-top:.75rem">stderr</div>
-                  <pre>{{ h.audit_stderr }}</pre>
+                <!-- Command outputs -->
+                {% for result in h.audit_commands %}
+                <div class="cmd-block">
+                  <div class="cmd-header">
+                    <span class="cmd-label">$ {{ result.item }}</span>
+                    <span class="cmd-rc {{ 'ok' if result.rc == 0 else 'err' }}">
+                      {{ '✓ rc=0' if result.rc == 0 else '✗ rc=' ~ result.rc }}
+                    </span>
+                  </div>
+                  <pre>{{ result.stdout if result.stdout else '(no output)' }}</pre>
+                  {% if result.stderr %}
+                  <pre class="stderr">{{ result.stderr }}</pre>
+                  {% endif %}
                 </div>
-                {% endif %}
+                {% if not loop.last %}<hr class="divider">{% endif %}
+                {% endfor %}
 
                 {% endif %}
 
@@ -365,7 +382,7 @@
 
             <footer>
               Generated by Ansible on localhost &nbsp;·&nbsp; {{ ansible_date_time.iso8601 }}
-              &nbsp;·&nbsp; {{ total_hosts }} host(s) &nbsp;·&nbsp; <code>$ {{ audit_command }}</code>
+              &nbsp;·&nbsp; {{ total_hosts }} host(s)
             </footer>
 
           </body>
@@ -381,7 +398,12 @@
         content: |
           Hostname,IP,OS,Connectivity,Auth Status,Command,Return Code,Output
           {% for h in all_audit_reports %}
-          "{{ h.hostname }}","{{ h.ip }}","{{ h.os }}","{{ h.connectivity }}","{{ h.auth_status }}","{{ h.audit_command }}","{{ h.audit_rc }}","{{ h.audit_stdout | replace('"', "'") | replace('\n', ' | ') }}"
+          {% for result in h.audit_commands %}
+          "{{ h.hostname }}","{{ h.ip }}","{{ h.os }}","{{ h.connectivity }}","{{ h.auth_status }}","{{ result.item }}","{{ result.rc }}","{{ result.stdout | default('') | replace('"', "'") | replace('\n', ' | ') }}"
+          {% endfor %}
+          {% if h.audit_commands | length == 0 %}
+          "{{ h.hostname }}","{{ h.ip }}","{{ h.os }}","{{ h.connectivity }}","{{ h.auth_status }}","N/A","N/A","skipped"
+          {% endif %}
           {% endfor %}
 
     - name: Print report location
@@ -399,28 +421,34 @@
         password: "{{ gmail_password }}"
         sender:   "{{ gmail_user }}"
         to:       "{{ recipient }}"
-        subject:  "Audit Report — {{ audit_command }} — {{ total_hosts }} hosts — {{ run_ts }}"
+        subject:  "Audit Report — {{ total_hosts }} hosts — {{ audit_commands_list | length }} commands — {{ run_ts }}"
         body: |
-          Ansible audit report for command: '{{ audit_command }}'
-          Run across {{ total_hosts }} host(s).
+          Ansible audit report across {{ total_hosts }} host(s).
+
+          ── Commands Run ─────────────────────────────────────
+          {% for cmd in audit_commands_list %}
+          {{ loop.index }}. {{ cmd }}
+          {% endfor %}
+          ─────────────────────────────────────────────────────
 
           ── Summary ──────────────────────────────────────────
-          Command       : {{ audit_command }}
           Total Hosts   : {{ total_hosts }}
           Connected     : {{ hosts_connected }} / {{ total_hosts }}
           Unreachable   : {{ hosts_unreachable }}
           Auth Failures : {{ hosts_auth_failed }}
-          Command OK    : {{ hosts_cmd_ok }} / {{ total_hosts }}
           ─────────────────────────────────────────────────────
 
           {% for h in all_audit_reports %}
-          Host : {{ h.hostname }} ({{ h.ip }})
-            Connectivity : {{ h.connectivity }}
-            Auth Status  : {{ h.auth_status }}
-            Return Code  : {{ h.audit_rc }}
-            Output:
-          {{ h.audit_stdout | indent(4, first=true) }}
+          ══ {{ h.hostname }} ({{ h.ip }}) ══
+          Connectivity : {{ h.connectivity }}
+          Auth Status  : {{ h.auth_status }}
+          OS           : {{ h.os }}
 
+          {% for result in h.audit_commands %}
+          $ {{ result.item }} (rc={{ result.rc }})
+          {{ result.stdout | indent(2, first=true) }}
+
+          {% endfor %}
           {% endfor %}
           Full details in the attached HTML report.
         secure: starttls
@@ -430,4 +458,4 @@
 
     - name: Confirm email sent
       ansible.builtin.debug:
-        msg: "✅ Report emailed to {{ recipient }} — {{ total_hosts }} host(s) — cmd: {{ audit_command }}"
+        msg: "✅ Report emailed to {{ recipient }} — {{ total_hosts }} host(s) — {{ audit_commands_list | length }} commands"
