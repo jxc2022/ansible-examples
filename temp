@@ -1,0 +1,5 @@
+    "ansible_facts": {
+        "ansible_distribution": "SLES_SAP",
+        "discovered_interpreter_python": "/usr/bin/python3.11"
+    },
+    "changed": false
