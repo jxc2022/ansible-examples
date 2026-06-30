@@ -1,0 +1,12 @@
+unreachable: true
+msg: >-
+  Failed to create temporary directory. In some cases, you may have been able to
+  authenticate and did not have permissions on the target directory. Consider
+  changing the remote tmp path in ansible.cfg to a path rooted in "/tmp", for
+  more error information use -vvv. Failed command was: ( umask 77 && mkdir -p "`
+  echo ~/.ansible/tmp `"&& mkdir "` echo
+  ~/.ansible/tmp/ansible-tmp-1782841778.2145693-20-87989052612846 `" && echo
+  ansible-tmp-1782841778.2145693-20-87989052612846="` echo
+  ~/.ansible/tmp/ansible-tmp-1782841778.2145693-20-87989052612846 `" ), exited
+  with result 1
+changed: false
