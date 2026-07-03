@@ -1,0 +1,211 @@
+# PDC Agent RHEL9 Rebase — Production Rollout Runbook
+
+## Core safety principle
+
+**Never deploy with a `latest` tag in prod.** Every build gets an immutable,
+unique tag. The currently-running image and the previous known-good image
+both stay cached on the host. Rollback is then just "point the Quadlet at
+the old tag and restart" — no rebuild, no registry pull, no dependency on
+anything external working. That's what makes it instant.
+
+---
+
+## 1. Pre-flight (do this before touching prod)
+
+- [ ] Confirm you have a **known-good rollback target**: the exact image
+      reference currently running in prod (e.g.
+      `registry.internal/pdc-agent:v0.0.61-alpine-orig` or whatever the
+      current stock image + tag is). Record it before you start:
+      ```bash
+      podman inspect pdc-agent --format '{{.ImageName}}'
+      ```
+- [ ] Confirm that image is present in **local Podman storage** on the prod
+      host (not just the registry) — this is what makes rollback not depend
+      on network/registry availability:
+      ```bash
+      podman images | grep pdc-agent
+      ```
+      If it's not local, pull it now, before the change window:
+      ```bash
+      podman pull <current-prod-image>:<current-tag>
+      ```
+- [ ] Change ticket / CAB approval, per your normal process.
+- [ ] Maintenance window scheduled — even though PDC agent restarts are
+      fast, any restart drops the SSH tunnel for a few seconds, which
+      briefly interrupts any live Grafana Cloud query hitting a data
+      source behind this agent.
+- [ ] Notify anyone relying on dashboards/alerts fed through this PDC
+      connection that a brief blip is expected.
+
+---
+
+## 2. Build with an immutable tag (staging/build host, NOT prod)
+
+Never build directly on the prod host if you can avoid it — build on a
+staging box or CI runner, validate there, then promote the *exact same
+image digest* to prod. This guarantees "what you tested is what you ship."
+
+```bash
+cd ~/pdc-agent-rhel9
+
+# Tag scheme: <upstream-pdc-version>-rhel9-<build-date>
+# e.g. v0.0.61-rhel9-20260703
+BUILD_TAG="v0.0.61-rhel9-$(date +%Y%m%d)"
+
+podman build -t registry.internal/pdc-agent-rhel9:${BUILD_TAG} -f Containerfile .
+```
+
+### Validate before it ever goes near prod
+
+```bash
+# Smoke test: binary runs, prints usage
+podman run --rm --entrypoint /usr/bin/pdc \
+  registry.internal/pdc-agent-rhel9:${BUILD_TAG} -h
+
+# Full connection test against a NON-PROD PDC network/stack if you have one.
+# If you don't have a staging Grafana Cloud stack, at minimum run it
+# standalone and confirm it reaches the auth handshake stage without erroring
+# (do NOT point it at prod credentials for this step).
+```
+
+- [ ] Record the exact image digest, not just the tag, for your change
+      record:
+      ```bash
+      podman inspect registry.internal/pdc-agent-rhel9:${BUILD_TAG} --format '{{.Digest}}'
+      ```
+
+### Push to your internal registry
+
+```bash
+podman push registry.internal/pdc-agent-rhel9:${BUILD_TAG}
+```
+
+---
+
+## 3. Deploy to prod
+
+### Pull the exact validated image onto the prod host
+
+```bash
+podman pull registry.internal/pdc-agent-rhel9:${BUILD_TAG}
+```
+
+Confirm it's now sitting locally alongside the rollback image:
+
+```bash
+podman images | grep pdc-agent
+```
+
+You should see **both** the old known-good image and the new one. Do not
+remove the old one yet — it stays until you've confirmed the new one is
+stable (recommend: keep it for at least one full week post-deploy).
+
+### Update the Quadlet with the pinned tag
+
+```bash
+sudo vi /etc/containers/systemd/pdc-agent.container
+```
+
+```ini
+Image=registry.internal/pdc-agent-rhel9:v0.0.61-rhel9-20260703
+```
+
+(Never `:latest` — always the exact tag you validated.)
+
+### Apply
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pdc-agent.service
+```
+
+### Verify immediately
+
+```bash
+sudo journalctl -u pdc-agent -n 30 --no-pager
+```
+
+Look for the same success sequence every time:
+```
+msg="new client SSH certificate generated"
+msg="Authenticated to private-datasource-connect-<cluster>.grafana.net ..."
+msg="This is Grafana Private Datasource Connect!"
+```
+
+Then confirm from the Grafana Cloud side:
+- **Connections → Private data source connect → Test agent connection**
+- Confirm any dashboards/alerts that depend on data sources behind this
+  agent are resolving normally (spot check 1-2 panels).
+
+- [ ] Monitor for at least 15-30 minutes post-deploy before closing the
+      change window. Watch for reconnect loops, auth failures, or
+      unexpected restarts:
+      ```bash
+      sudo journalctl -u pdc-agent -f
+      ```
+
+---
+
+## 4. Instant rollback procedure
+
+If anything looks wrong — auth failures, crash loops, data sources not
+resolving, anything — roll back immediately. Don't troubleshoot forward
+under time pressure during a change window; roll back first, investigate
+after.
+
+```bash
+sudo vi /etc/containers/systemd/pdc-agent.container
+```
+
+Change `Image=` back to the exact known-good reference you recorded in
+step 1:
+
+```ini
+Image=<current-prod-image>:<current-tag>
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pdc-agent.service
+sudo journalctl -u pdc-agent -n 20 --no-pager
+```
+
+Because the rollback image is **already pulled and cached locally** (step
+1 pre-flight), this restart happens in seconds with zero dependency on
+registry availability, network egress, or anything outside the host
+itself. That's the entire point of pinning tags and pre-pulling — the
+rollback path has no external dependencies to fail.
+
+- [ ] Confirm rollback success the same way as step 3 (journal logs +
+      Grafana Cloud test connection).
+- [ ] Document what went wrong before re-attempting the new image.
+
+---
+
+## 5. Post-deploy cleanup (only after the image has proven stable)
+
+Once you're confident the new image is solid (recommend: 1+ week of
+stable operation), you can prune the old rollback image if storage is a
+concern:
+
+```bash
+podman images | grep pdc-agent
+podman rmi <old-image>:<old-tag>
+```
+
+Don't rush this step. Keeping a known-good rollback image around costs a
+few hundred MB of disk; not having one when you need it costs an incident.
+
+---
+
+## Summary checklist
+
+| Step | Action |
+|---|---|
+| Pre-flight | Record current image, confirm it's cached locally |
+| Build | Tag immutably (never `latest`), on staging not prod |
+| Validate | Smoke test + connection test before promoting |
+| Deploy | Pull exact validated tag onto prod, update Quadlet, restart |
+| Verify | Check logs + Grafana Cloud connection test |
+| Rollback (if needed) | Revert `Image=` tag to known-good, restart — seconds, no external deps |
+| Cleanup | Prune old image only after proven stability window |
