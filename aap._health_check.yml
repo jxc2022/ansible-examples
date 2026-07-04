@@ -202,15 +202,18 @@
       register: aap_hub_status
       ignore_errors: yes
 
-    - name: Set component health facts
-      set_fact:
-        controller_health: "{{ 'OK' if (aap_ping.status | default(0)) == 200 else 'FAIL' }}"
-        gateway_ping_health: "{{ 'OK' if (aap_gateway_ping.status | default(0)) == 200 else 'FAIL' }}"
-        gateway_status_health: "{{ 'OK' if (aap_gateway_status.status | default(0)) == 200 else 'FAIL' }}"
-        gateway_services_health: "{{ 'OK' if (aap_gateway_services.status | default(0)) == 200 else 'FAIL' }}"
-        hub_health: "{{ 'OK' if (aap_hub_status.status | default(0)) == 200 else 'FAIL' }}"
-
     - name: Query AAP ping endpoint for version info
+      uri:
+        url: "{{ aap_api_base }}/ping/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_ping
+      ignore_errors: yes
+
+    - name: Query AAP config endpoint for license/patch info
       uri:
         url: "{{ aap_api_base }}/ping/"
         method: GET
