@@ -326,6 +326,59 @@
           </p>
           <hr>
           <!-- ========================= -->
+          <!--      STATUS LEGEND        -->
+          <!-- ========================= -->
+          <h2>Status Legend</h2>
+          <p>
+            <span style="color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;">OK</span>
+            &nbsp;= Healthy / within normal threshold&nbsp;&nbsp;&nbsp;
+            <span style="color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;">Warning</span>
+            &nbsp;= Needs attention
+          </p>
+          <table>
+              <tr>
+                  <th>Check</th>
+                  <th>Green (OK) means</th>
+                  <th>Red (Warning) means</th>
+              </tr>
+              <tr>
+                  <td>Component Health (Controller, Hub, Gateway)</td>
+                  <td>Endpoint returned HTTP 200 — service is reachable</td>
+                  <td>Endpoint failed to respond or returned an error</td>
+              </tr>
+              <tr>
+                  <td>License Status</td>
+                  <td>Subscription is compliant</td>
+                  <td>Subscription is non-compliant — may affect support/functionality</td>
+              </tr>
+              <tr>
+                  <td>Disk Usage (per host)</td>
+                  <td>Highest filesystem usage on host is below 75%</td>
+                  <td>A filesystem on the host is at or above 75% used</td>
+              </tr>
+              <tr>
+                  <td>SSSD Health (per host)</td>
+                  <td>No SSSD errors logged in the last hour</td>
+                  <td>SSSD errors were logged in the last hour — possible AD/auth issue</td>
+              </tr>
+              <tr>
+                  <td>AAP API Response Time</td>
+                  <td>Gateway responded in under 1 second</td>
+                  <td>Gateway took 1 second or longer to respond — possible platform slowness</td>
+              </tr>
+              <tr>
+                  <td>Active/Pending/Waiting Jobs</td>
+                  <td>10 or fewer jobs currently queued or running</td>
+                  <td>More than 10 jobs queued — possible automation backlog</td>
+              </tr>
+              <tr>
+                  <td>Per-Host Load Average</td>
+                  <td>1-minute load average is below the host's CPU core count</td>
+                  <td>Load average meets or exceeds CPU core count — host is under heavy load</td>
+              </tr>
+          </table>
+          <hr>
+          <!-- ========================= -->
           <!--     COMPONENT HEALTH      -->
           <!-- ========================= -->
           <h2>Component Health</h2>
