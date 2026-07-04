@@ -147,7 +147,7 @@
         aap_subscription_name: "{{ aap_config.json.license_info.subscription_name | default('Unavailable') }}"
         aap_license_compliant: "{{ aap_config.json.license_info.compliant | default(false) }}"
         aap_license_expiration: "{{ '%Y-%m-%d' | strftime(aap_config.json.license_info.license_date) if aap_config.json.license_info.license_date is defined else 'Unavailable' }}"
-        aap_current_instances: "{{ aap_config.json.license_info.current_instances | default('N/A') }}"
+        aap_current_instances: "{{ aap_config.json.license_info.automated_instances | default('N/A') }}"
         aap_instance_count: "{{ aap_config.json.license_info.instance_count | default('N/A') }}"
         aap_account_number: "{{ aap_config.json.license_info.account_number | default('N/A') }}"
         aap_subscription_id: "{{ aap_config.json.license_info.subscription_id | default('N/A') }}"
@@ -202,7 +202,7 @@
           <p><strong>Subscription:</strong> {{ aap_subscription_name }} ({{ aap_license_type | capitalize }})
              | <strong>License Status:</strong> {{ 'Compliant' if aap_license_compliant else 'Non-Compliant' }}
              | <strong>Expires:</strong> {{ aap_license_expiration }}
-             | <strong>Instances Used:</strong> {{ aap_current_instances }} / {{ aap_instance_count }}
+             | <strong>Automated Instances:</strong> {{ aap_current_instances }} / {{ aap_instance_count }}
           </p>
           <p><strong>Account Number:</strong> {{ aap_account_number }}
              | <strong>Subscription ID:</strong> {{ aap_subscription_id }}
