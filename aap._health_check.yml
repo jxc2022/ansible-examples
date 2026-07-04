@@ -52,7 +52,7 @@
       command: uptime -p
       register: uptime_output
 
-    - name: Check running Podman containers as ansible user
+    - name: Check running Podman containers as aap user
       become_user: aap
       command: podman ps --format "table {{ '{{.Names}}' }}\t{{ '{{.Status}}' }}\t{{ '{{.Image}}' }}"
       register: podman_output
@@ -75,7 +75,7 @@
           disk: "{{ disk_output.stdout_lines }}"
           memory: "{{ mem_output.stdout_lines }}"
           uptime: "{{ uptime_output.stdout }}"
-          podman: "{{ podman_output.stdout_lines | default([]) }}"
+          podman: "{{ (podman_output.stdout_lines | default([]))[1:] if (podman_output.stdout_lines | default([]) | length > 0) else [] }}"
           sssd_logs: "{{ sssd_logs.stdout_lines | default([]) }}"
 
 
