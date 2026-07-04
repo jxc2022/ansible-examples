@@ -99,6 +99,36 @@
   tasks:
 
     # -----------------------------------------------------
+    # Query AAP platform version / patch level
+    # -----------------------------------------------------
+    - name: Query AAP ping endpoint for version info
+      uri:
+        url: "{{ aap_api_base }}/ping/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_ping
+      ignore_errors: yes
+
+    - name: Query AAP config endpoint for license/patch info
+      uri:
+        url: "{{ aap_api_base }}/config/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_config
+      ignore_errors: yes
+
+    - name: Set AAP version facts
+      set_fact:
+        aap_version: "{{ aap_config.json.version | default(aap_ping.json.version) | default('Unavailable') }}"
+        aap_node_versions: "{{ aap_ping.json.instances | default([]) | map(attribute='version') | default([]) | list }}"
+
+    # -----------------------------------------------------
     # Gather all host health data — hostname -> full hostvars
     # (template below expects data.health_report.*, so we
     # keep the whole hostvars entry per host, not just the
@@ -144,6 +174,9 @@
           <body>
           <h1>AAP Consolidated Health Report</h1>
           <p>Generated on {{ ansible_date_time.date }} at {{ ansible_date_time.time }}</p>
+          <p><strong>AAP Version:</strong> {{ aap_version }}
+             {% if aap_node_versions %} | <strong>Node Patch Levels:</strong> {{ aap_node_versions | join(', ') }}{% endif %}
+          </p>
           <hr>
           <!-- ========================= -->
           <!--      SUMMARY TABLE        -->
