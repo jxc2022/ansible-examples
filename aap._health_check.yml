@@ -169,6 +169,47 @@
       register: aap_gateway_ping
       ignore_errors: yes
 
+    - name: Query AAP Gateway status endpoint
+      uri:
+        url: "{{ aap_api_root }}/api/gateway/v1/status/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_gateway_status
+      ignore_errors: yes
+
+    - name: Query AAP Gateway services endpoint
+      uri:
+        url: "{{ aap_api_root }}/api/gateway/v1/services/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_gateway_services
+      ignore_errors: yes
+
+    - name: Query Automation Hub status endpoint
+      uri:
+        url: "{{ aap_api_root }}/api/galaxy/pulp/api/v3/status/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_hub_status
+      ignore_errors: yes
+
+    - name: Set component health facts
+      set_fact:
+        controller_health: "{{ 'OK' if (aap_ping.status | default(0)) == 200 else 'FAIL' }}"
+        gateway_ping_health: "{{ 'OK' if (aap_gateway_ping.status | default(0)) == 200 else 'FAIL' }}"
+        gateway_status_health: "{{ 'OK' if (aap_gateway_status.status | default(0)) == 200 else 'FAIL' }}"
+        gateway_services_health: "{{ 'OK' if (aap_gateway_services.status | default(0)) == 200 else 'FAIL' }}"
+        hub_health: "{{ 'OK' if (aap_hub_status.status | default(0)) == 200 else 'FAIL' }}"
+
     - name: Query AAP ping endpoint for version info
       uri:
         url: "{{ aap_api_base }}/ping/"
@@ -279,6 +320,48 @@
           <p><strong>Account Number:</strong> {{ aap_account_number }}
              | <strong>Subscription ID:</strong> {{ aap_subscription_id }}
           </p>
+          <hr>
+          <!-- ========================= -->
+          <!--     COMPONENT HEALTH      -->
+          <!-- ========================= -->
+          <h2>Component Health</h2>
+          <table>
+              <tr>
+                  <th>Component</th>
+                  <th>Endpoint</th>
+                  <th>Status</th>
+              </tr>
+              <tr>
+                  <td>Automation Controller</td>
+                  <td>/api/controller/v2/ping/</td>
+                  <td>{{ controller_health }}</td>
+              </tr>
+              <tr>
+                  <td>Automation Hub</td>
+                  <td>/api/galaxy/pulp/api/v3/status/</td>
+                  <td>{{ hub_health }}</td>
+              </tr>
+              <tr>
+                  <td>Automation Gateway (ping)</td>
+                  <td>/api/gateway/v1/ping/</td>
+                  <td>{{ gateway_ping_health }}</td>
+              </tr>
+              <tr>
+                  <td>Automation Gateway (status)</td>
+                  <td>/api/gateway/v1/status/</td>
+                  <td>{{ gateway_status_health }}</td>
+              </tr>
+              <tr>
+                  <td>Automation Gateway (services)</td>
+                  <td>/api/gateway/v1/services/</td>
+                  <td>{{ gateway_services_health }}</td>
+              </tr>
+              <tr>
+                  <td>Event Driven Ansible</td>
+                  <td>No official health endpoint (see AAPRFE-1202)</td>
+                  <td>N/A</td>
+              </tr>
+          </table>
           <hr>
           <!-- ========================= -->
           <!--      SUMMARY TABLE        -->
