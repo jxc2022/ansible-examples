@@ -160,7 +160,7 @@
               {% set max_disk = (data.health_report.disk | map('regex_search', '\\d+%') | select('string') | list) %}
               {% set max_disk_val = (max_disk | map('replace', '%', '') | map('int') | max) %}
               {% set status = 'OK' if max_disk_val < 75 else 'Warning' %}
-              {% set sssd_status = 'OK' if (data.health_report.sssd_logs | length == 0) else 'Warning' %}
+              {% set sssd_status = 'OK' if (data.health_report.sssd_logs | length == 0 or (data.health_report.sssd_logs | length == 1 and 'No entries' in data.health_report.sssd_logs[0])) else 'Warning' %}
               <tr>
                   <td>{{ host }}</td>
                   <td>{{ max_disk_val }}%</td>
