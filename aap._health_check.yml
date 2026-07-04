@@ -93,7 +93,7 @@
     gmail_user:       "jorge.x.chavez@gmail.com"
     gmail_password:   "nnmk dzsm ylgf tsur"
     report_local_dir: "/tmp/reports"
-    aap_api_base:     "https://aap.molly.lab:8448/api/controller/v2"
+    aap_api_base:     "https://aap.molly.lab/api/controller/v2"
     aap_token:        "6fXfwf7Au4ZdyT3wzqHyOe1XkpcjRa"
 
   tasks:
