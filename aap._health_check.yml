@@ -204,6 +204,9 @@
              | <strong>Expires:</strong> {{ aap_license_expiration }}
              | <strong>Instances Used:</strong> {{ aap_current_instances }} / {{ aap_instance_count }}
           </p>
+          <p><strong>Account Number:</strong> {{ aap_account_number }}
+             | <strong>Subscription ID:</strong> {{ aap_subscription_id }}
+          </p>
           <hr>
           <!-- ========================= -->
           <!--      SUMMARY TABLE        -->
