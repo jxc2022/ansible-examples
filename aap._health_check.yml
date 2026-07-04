@@ -67,6 +67,42 @@
       ignore_errors: yes
 
     # -----------------------------------------------------
+    # Targeted PostgreSQL volume disk check (host-agnostic —
+    # works whether postgresql runs on this host or not, and
+    # regardless of whether it's colocated with other AAP
+    # containers or split onto its own host in prod)
+    # -----------------------------------------------------
+    - name: Check for postgres/postgresql container on this host
+      become_user: aap
+      command: podman ps --filter "name=postgres" --format "{{ '{{.Names}}' }}"
+      register: pg_container_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set discovered postgres container name
+      set_fact:
+        pg_container_name: "{{ (pg_container_check.stdout_lines | default([]) | select('match', '^postgres') | list | first) | default('') }}"
+
+    - name: Get postgres container's actual volume mount source
+      become_user: aap
+      command: podman inspect {{ pg_container_name }} --format "{{ '{{ range .Mounts }}{{ .Source }}{{ \"\\n\" }}{{ end }}' }}"
+      register: pg_mount_raw
+      when: pg_container_name != ''
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Get disk usage for postgresql volume path
+      command: "df -h {{ (pg_mount_raw.stdout_lines | default([]) | select('ne','') | list | first) }}"
+      register: pg_disk_usage
+      when: pg_mount_raw is defined and (pg_mount_raw.stdout_lines | default([]) | select('ne','') | list | length > 0)
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set postgres disk fact (only populated on the host actually running postgresql)
+      set_fact:
+        postgres_disk_info: "{{ pg_disk_usage.stdout_lines | default([]) }}"
+
+    # -----------------------------------------------------
     # Consolidate host facts
     # -----------------------------------------------------
     - name: Set host facts for report
@@ -77,6 +113,7 @@
           uptime: "{{ uptime_output.stdout }}"
           podman: "{{ (podman_output.stdout_lines | default([]))[1:] if (podman_output.stdout_lines | default([]) | length > 0) else [] }}"
           sssd_logs: "{{ sssd_logs.stdout_lines | default([]) }}"
+          postgres_disk: "{{ postgres_disk_info | default([]) }}"
 
 
 # ---------------------------------------------------------
@@ -236,6 +273,24 @@
               </tr>
               {% endfor %}
           </table>
+          <hr>
+          <!-- ========================= -->
+          <!--   POSTGRESQL DB VOLUME    -->
+          <!-- ========================= -->
+          <h2>PostgreSQL Data Volume</h2>
+          {% set pg_hosts = all_reports.items() | selectattr('1.health_report.postgres_disk', 'defined') | selectattr('1.health_report.postgres_disk', '!=', []) | list %}
+          {% if pg_hosts %}
+          {% for host, data in pg_hosts %}
+          <p><strong>Host:</strong> {{ host }}</p>
+          <pre>
+          {% for line in data.health_report.postgres_disk %}
+          {{ line }}
+          {% endfor %}
+          </pre>
+          {% endfor %}
+          {% else %}
+          <p>PostgreSQL container not found on any monitored host — volume usage unavailable.</p>
+          {% endif %}
           <hr>
           <!-- ========================= -->
           <!--   PER-HOST DETAILED DATA  -->
