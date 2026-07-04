@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AAP Consolidated Health Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #2a4d69; }
+        h2 { color: #4b86b4; }
+        h3 { color: #1b3c59; }
+        pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #e8eef3; }
+        .host-section { margin-bottom: 40px; }
+    </style>
+</head>
+<body>
+
+<h1>AAP Consolidated Health Report</h1>
+<p>Generated on {{ ansible_date_time.date }} at {{ ansible_date_time.time }}</p>
+<hr>
+
+<!-- ========================= -->
+<!--      SUMMARY TABLE        -->
+<!-- ========================= -->
+
+<h2>Summary</h2>
+<table>
+    <tr>
+        <th>Host</th>
+        <th>Max Disk Usage</th>
+        <th>Status</th>
+        <th>Podman Containers</th>
+        <th>Uptime</th>
+        <th>SSSD Health</th>
+    </tr>
+
+    {% for host, data in all_reports.items() %}
+    {% set max_disk = (data.health_report.disk | map('regex_search', '\\d+%') | select('string') | list) %}
+    {% set max_disk_val = (max_disk | map('replace', '%', '') | map('int') | max) %}
+    {% set status = 'OK' if max_disk_val < 75 else 'Warning' %}
+    {% set sssd_status = 'OK' if (data.health_report.sssd_logs | length == 0) else 'Warning' %}
+    <tr>
+        <td>{{ host }}</td>
+        <td>{{ max_disk_val }}%</td>
+        <td>{{ status }}</td>
+        <td>{{ data.health_report.podman | length }}</td>
+        <td>{{ data.health_report.uptime }}</td>
+        <td>{{ sssd_status }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+<hr>
+
+<!-- ========================= -->
+<!--   PER-HOST DETAILED DATA  -->
+<!-- ========================= -->
+
+{% for host, data in all_reports.items() %}
+<div class="host-section">
+    <h2>Host: {{ host }}</h2>
+
+    <h3>Disk Usage</h3>
+    <pre>
+{% for line in data.health_report.disk %}
+{{ line }}
+{% endfor %}
+    </pre>
+
+    <h3>Memory Usage</h3>
+    <pre>
+{% for line in data.health_report.memory %}
+{{ line }}
+{% endfor %}
+    </pre>
+
+    <h3>Uptime</h3>
+    <pre>{{ data.health_report.uptime }}</pre>
+
+    <h3>Running Podman Containers</h3>
+    {% if data.health_report.podman %}
+    <pre>
+{% for line in data.health_report.podman %}
+{{ line }}
+{% endfor %}
+    </pre>
+    {% else %}
+    <p>No running containers.</p>
+    {% endif %}
+
+    <h3>SSSD Logs (Last 1 Hour)</h3>
+    {% if data.health_report.sssd_logs %}
+    <pre>
+{% for line in data.health_report.sssd_logs %}
+{{ line }}
+{% endfor %}
+    </pre>
+    {% else %}
+    <p>No recent SSSD log entries.</p>
+    {% endif %}
+
+    <hr>
+</div>
+{% endfor %}
+
+</body>
+</html>
