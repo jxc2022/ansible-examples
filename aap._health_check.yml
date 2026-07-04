@@ -33,7 +33,7 @@
 # ---------------------------------------------------------
 # PLAY 2 — Collect health data
 # ---------------------------------------------------------
-- name: Collect health data from RHEL  servers
+- name: Collect health data from RHEL servers
   hosts: linux_servers
   become: yes
   gather_facts: yes
@@ -53,7 +53,7 @@
       register: uptime_output
 
     - name: Check running Podman containers as ansible user
-      become_user: aap
+      become_user: ansible
       command: podman ps --format "table {{ '{{.Names}}' }}\t{{ '{{.Status}}' }}\t{{ '{{.Image}}' }}"
       register: podman_output
       ignore_errors: yes
@@ -97,15 +97,34 @@
 
   tasks:
 
-    - name: Gather all host health data
+    # -----------------------------------------------------
+    # Gather all host health data (nested attribute fix)
+    # -----------------------------------------------------
+    - name: Get list of hosts with health_report defined
       set_fact:
-        all_reports: >-
+        reporting_hosts: >-
           {{
             hostvars
             | dict2items
             | selectattr('value.health_report', 'defined')
-            | items2dict(key_name='key', value_name='value')
+            | map(attribute='key')
+            | list
           }}
+
+    - name: Get list of health_report values for those hosts
+      set_fact:
+        reporting_data: >-
+          {{
+            hostvars
+            | dict2items
+            | selectattr('value.health_report', 'defined')
+            | map(attribute='value.health_report')
+            | list
+          }}
+
+    - name: Build all_reports as hostname -> health_report dict
+      set_fact:
+        all_reports: "{{ dict(reporting_hosts | zip(reporting_data)) }}"
 
     - name: Compute summary counts
       set_fact:
