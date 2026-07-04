@@ -1,0 +1,126 @@
+# ---------------------------------------------------------
+# PLAY 1 — Dynamic Inventory (single server list)
+# ---------------------------------------------------------
+- name: Build dynamic inventory
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    server_list: |
+      192.168.1.60
+
+  tasks:
+
+    - name: Convert server_list string to a list
+      set_fact:
+        servers: "{{ server_list.split('\n')
+                     | map('trim')
+                     | select('ne','')
+                     | unique
+                     | list }}"
+
+    - name: Create dynamic group linux_servers
+      add_host:
+        name: "{{ item }}"
+        groups: linux_servers
+      loop: "{{ servers }}"
+
+    - name: Show dynamically added servers
+      debug:
+        msg: "Added {{ servers }} to group linux_servers"
+
+
+# ---------------------------------------------------------
+# PLAY 2 — Collect health data
+# ---------------------------------------------------------
+- name: Collect health data from RHEL  servers
+  hosts: linux_servers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+    - name: Check disk space
+      command: df -h
+      register: disk_output
+
+    - name: Check free memory
+      command: free -h
+      register: mem_output
+
+    - name: Check uptime
+      command: uptime -p
+      register: uptime_output
+
+    - name: Check running Podman containers as ansible user
+      become_user: ansible
+      command: podman ps --format "table {{ '{{.Names}}' }}\t{{ '{{.Status}}' }}\t{{ '{{.Image}}' }}"
+      register: podman_output
+      ignore_errors: yes
+
+    # -----------------------------------------------------
+    # SSSD LOG COLLECTION (last 1 hour)
+    # -----------------------------------------------------
+    - name: Collect recent SSSD errors
+      command: journalctl -u sssd --since "1 hour ago"
+      register: sssd_logs
+      ignore_errors: yes
+
+    # -----------------------------------------------------
+    # Consolidate host facts
+    # -----------------------------------------------------
+    - name: Set host facts for report
+      set_fact:
+        health_report:
+          disk: "{{ disk_output.stdout_lines }}"
+          memory: "{{ mem_output.stdout_lines }}"
+          uptime: "{{ uptime_output.stdout }}"
+          podman: "{{ podman_output.stdout_lines | default([]) }}"
+          sssd_logs: "{{ sssd_logs.stdout_lines | default([]) }}"
+
+
+# ---------------------------------------------------------
+# PLAY 3 — Build HTML report and send email
+# ---------------------------------------------------------
+- name: Build and email consolidated HTML report
+  hosts: localhost
+  gather_facts: yes
+
+  vars:
+    report_file: "/tmp/prod_aap.html"
+    html_file_path: "/tmp/prod_aap.html"
+    recipient:           "{{ recipient | mandatory }}"
+    gmail_user:          "jorge.x.chavez@gmail.com"
+    gmail_password:      "nnmk dzsm ylgf tsur"
+    report_local_dir:    "/tmp/reports"
+
+  tasks:
+
+    - name: Gather all host health data
+      set_fact:
+        all_reports: >-
+          {{
+            hostvars
+            | dict2items
+            | selectattr('value.health_report', 'defined')
+            | items2dict(key_name='key', value_name='value')
+          }}
+
+    - name: Generate consolidated HTML report
+      template:
+        src: consolidated_report.j2
+        dest: "{{ report_file }}"
+
+    - name: Send report email
+      community.general.mail:
+        host:     "smtp.gmail.com"
+        port:     587
+        username: "{{ gmail_user }}"
+        password: "{{ gmail_password }}"
+        sender:   "{{ gmail_user }}"
+        to:       "{{ recipient }}"
+        subject:  "Audit Report — {{ total_hosts }} hosts — {{ audit_commands_list | length }} commands — {{ run_ts }}"
+        body: |
+        attach:
+          - "{{ html_file_path }}"
+      ignore_errors: true
