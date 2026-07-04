@@ -53,7 +53,7 @@
       register: uptime_output
 
     - name: Check running Podman containers as ansible user
-      become_user: aap
+      become_user: ansible
       command: podman ps --format "table {{ '{{.Names}}' }}\t{{ '{{.Status}}' }}\t{{ '{{.Image}}' }}"
       register: podman_output
       ignore_errors: yes
@@ -93,38 +93,24 @@
     gmail_user:       "jorge.x.chavez@gmail.com"
     gmail_password:   "nnmk dzsm ylgf tsur"
     report_local_dir: "/tmp/reports"
-    run_ts:           "{{ ansible_date_time.iso8601 | default(lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ')) }}"
 
   tasks:
 
     # -----------------------------------------------------
-    # Gather all host health data (nested attribute fix)
+    # Gather all host health data — hostname -> full hostvars
+    # (template below expects data.health_report.*, so we
+    # keep the whole hostvars entry per host, not just the
+    # nested health_report dict)
     # -----------------------------------------------------
-    - name: Get list of hosts with health_report defined
+    - name: Gather all host health data
       set_fact:
-        reporting_hosts: >-
+        all_reports: >-
           {{
             hostvars
             | dict2items
             | selectattr('value.health_report', 'defined')
-            | map(attribute='key')
-            | list
+            | items2dict(key_name='key', value_name='value')
           }}
-
-    - name: Get list of health_report values for those hosts
-      set_fact:
-        reporting_data: >-
-          {{
-            hostvars
-            | dict2items
-            | selectattr('value.health_report', 'defined')
-            | map(attribute='value.health_report')
-            | list
-          }}
-
-    - name: Build all_reports as hostname -> health_report dict
-      set_fact:
-        all_reports: "{{ dict(reporting_hosts | zip(reporting_data)) }}"
 
     - name: Compute summary counts
       set_fact:
@@ -132,47 +118,103 @@
 
     # -----------------------------------------------------
     # Inline HTML report — no external .j2 file needed
+    # (ported from consolidated_report.j2)
     # -----------------------------------------------------
     - name: Render consolidated HTML report inline
       set_fact:
         html_report: |
+          <!DOCTYPE html>
           <html>
           <head>
-            <title>Audit Report - {{ run_ts }}</title>
-            <style>
-              body { font-family: Arial, sans-serif; background:#1e1e1e; color:#ddd; }
-              h1 { color:#4fc3f7; }
-              h2 { color:#81c784; border-bottom:1px solid #444; padding-bottom:4px; }
-              pre { background:#2b2b2b; padding:10px; border-radius:6px; overflow-x:auto; }
-              .host { margin-bottom:30px; }
-            </style>
+              <title>AAP Consolidated Health Report</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; }
+                  h1 { color: #2a4d69; }
+                  h2 { color: #4b86b4; }
+                  h3 { color: #1b3c59; }
+                  pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+                  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+                  th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+                  th { background-color: #e8eef3; }
+                  .host-section { margin-bottom: 40px; }
+              </style>
           </head>
           <body>
-            <h1>Consolidated Audit Report</h1>
-            <p><strong>Run Time:</strong> {{ run_ts }}</p>
-            <p><strong>Total Hosts:</strong> {{ total_hosts }}</p>
-
-            {% for hostname, data in all_reports.items() %}
-            <div class="host">
-              <h2>{{ hostname }}</h2>
-
-              <h3>Uptime</h3>
-              <pre>{{ data.uptime | default('N/A') }}</pre>
-
+          <h1>AAP Consolidated Health Report</h1>
+          <p>Generated on {{ ansible_date_time.date }} at {{ ansible_date_time.time }}</p>
+          <hr>
+          <!-- ========================= -->
+          <!--      SUMMARY TABLE        -->
+          <!-- ========================= -->
+          <h2>Summary</h2>
+          <table>
+              <tr>
+                  <th>Host</th>
+                  <th>Max Disk Usage</th>
+                  <th>Status</th>
+                  <th>Podman Containers</th>
+                  <th>Uptime</th>
+                  <th>SSSD Health</th>
+              </tr>
+              {% for host, data in all_reports.items() %}
+              {% set max_disk = (data.health_report.disk | map('regex_search', '\\d+%') | select('string') | list) %}
+              {% set max_disk_val = (max_disk | map('replace', '%', '') | map('int') | max) %}
+              {% set status = 'OK' if max_disk_val < 75 else 'Warning' %}
+              {% set sssd_status = 'OK' if (data.health_report.sssd_logs | length == 0) else 'Warning' %}
+              <tr>
+                  <td>{{ host }}</td>
+                  <td>{{ max_disk_val }}%</td>
+                  <td>{{ status }}</td>
+                  <td>{{ data.health_report.podman | length }}</td>
+                  <td>{{ data.health_report.uptime }}</td>
+                  <td>{{ sssd_status }}</td>
+              </tr>
+              {% endfor %}
+          </table>
+          <hr>
+          <!-- ========================= -->
+          <!--   PER-HOST DETAILED DATA  -->
+          <!-- ========================= -->
+          {% for host, data in all_reports.items() %}
+          <div class="host-section">
+              <h2>Host: {{ host }}</h2>
               <h3>Disk Usage</h3>
-              <pre>{{ data.disk | join('\n') }}</pre>
-
-              <h3>Memory</h3>
-              <pre>{{ data.memory | join('\n') }}</pre>
-
-              <h3>Podman Containers</h3>
-              <pre>{{ data.podman | default([]) | join('\n') }}</pre>
-
-              <h3>Recent SSSD Log Entries</h3>
-              <pre>{{ data.sssd_logs | default([]) | join('\n') }}</pre>
-            </div>
-            {% endfor %}
-
+              <pre>
+          {% for line in data.health_report.disk %}
+          {{ line }}
+          {% endfor %}
+              </pre>
+              <h3>Memory Usage</h3>
+              <pre>
+          {% for line in data.health_report.memory %}
+          {{ line }}
+          {% endfor %}
+              </pre>
+              <h3>Uptime</h3>
+              <pre>{{ data.health_report.uptime }}</pre>
+              <h3>Running Podman Containers</h3>
+              {% if data.health_report.podman %}
+              <pre>
+          {% for line in data.health_report.podman %}
+          {{ line }}
+          {% endfor %}
+              </pre>
+              {% else %}
+              <p>No running containers.</p>
+              {% endif %}
+              <h3>SSSD Logs (Last 1 Hour)</h3>
+              {% if data.health_report.sssd_logs %}
+              <pre>
+          {% for line in data.health_report.sssd_logs %}
+          {{ line }}
+          {% endfor %}
+              </pre>
+              {% else %}
+              <p>No recent SSSD log entries.</p>
+              {% endif %}
+              <hr>
+          </div>
+          {% endfor %}
           </body>
           </html>
 
@@ -196,7 +238,7 @@
         password: "{{ gmail_password }}"
         sender:   "{{ gmail_user }}"
         to:       "{{ recipient }}"
-        subject:  "Audit Report — {{ total_hosts }} hosts — {{ run_ts }}"
+        subject:  "Audit Report — {{ total_hosts }} hosts — {{ ansible_date_time.date }} {{ ansible_date_time.time }}"
         body: "Consolidated audit report attached. {{ total_hosts }} host(s) reported."
         attach:
           - "{{ html_file_path }}"
