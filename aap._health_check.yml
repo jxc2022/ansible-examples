@@ -328,6 +328,42 @@
           {% endif %}
           <hr>
           <!-- ========================= -->
+          <!--  PERFORMANCE / SLOWNESS   -->
+          <!-- ========================= -->
+          <h2>Performance &amp; Slowness Checks</h2>
+          <table>
+              <tr>
+                  <th>Check</th>
+                  <th>Value</th>
+                  <th>Status</th>
+              </tr>
+              <tr>
+                  <td>AAP API Response Time</td>
+                  <td>{{ aap_api_latency_ms }} ms</td>
+                  <td>{{ 'OK' if (aap_api_latency_ms | int) < 1000 else 'Warning' }}</td>
+              </tr>
+              <tr>
+                  <td>Active/Pending/Waiting Jobs</td>
+                  <td>{{ aap_job_queue_depth }}</td>
+                  <td>{{ 'OK' if (aap_job_queue_depth | int(-1)) <= 10 and (aap_job_queue_depth | int(-1)) >= 0 else 'Warning' }}</td>
+              </tr>
+          </table>
+          <h3>Per-Host Load Average &amp; Container Resource Usage</h3>
+          {% for host, data in all_reports.items() %}
+          {% set load1 = (data.health_report.load_avg.split(' ')[0] | default('0')) if data.health_report.load_avg != 'N/A' else '0' %}
+          {% set cpu_ct = data.health_report.cpu_count | default(1) %}
+          {% set load_status = 'OK' if (load1 | float) < (cpu_ct | float) else 'Warning' %}
+          <p><strong>{{ host }}</strong> — Load Avg (1/5/15m): {{ data.health_report.load_avg }} | CPU Count: {{ cpu_ct }} | Status: {{ load_status }}</p>
+          {% if data.health_report.podman_stats %}
+          <pre>
+          {% for line in data.health_report.podman_stats %}
+          {{ line }}
+          {% endfor %}
+          </pre>
+          {% endif %}
+          {% endfor %}
+          <hr>
+          <!-- ========================= -->
           <!--   PER-HOST DETAILED DATA  -->
           <!-- ========================= -->
           {% for host, data in all_reports.items() %}
