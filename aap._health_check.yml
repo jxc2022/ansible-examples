@@ -80,19 +80,20 @@
 
 
 # ---------------------------------------------------------
-# PLAY 3 — Build HTML report and send email
+# PLAY 3 — Build HTML report and send email (inline template)
 # ---------------------------------------------------------
 - name: Build and email consolidated HTML report
   hosts: localhost
   gather_facts: yes
 
   vars:
-    report_file: "/tmp/prod_aap.html"
-    html_file_path: "/tmp/prod_aap.html"
-    recipient:           "{{ recipient | mandatory }}"
-    gmail_user:          "jorge.x.chavez@gmail.com"
-    gmail_password:      "nnmk dzsm ylgf tsur"
-    report_local_dir:    "/tmp/reports"
+    report_file:      "/tmp/prod_aap.html"
+    html_file_path:   "/tmp/prod_aap.html"
+    recipient:        "{{ recipient | mandatory }}"
+    gmail_user:       "jorge.x.chavez@gmail.com"
+    gmail_password:   "nnmk dzsm ylgf tsur"
+    report_local_dir: "/tmp/reports"
+    run_ts:           "{{ ansible_date_time.iso8601 | default(lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ')) }}"
 
   tasks:
 
@@ -106,10 +107,67 @@
             | items2dict(key_name='key', value_name='value')
           }}
 
-    - name: Generate consolidated HTML report
-      template:
-        src: consolidated_report.j2
+    - name: Compute summary counts
+      set_fact:
+        total_hosts: "{{ all_reports | length }}"
+
+    # -----------------------------------------------------
+    # Inline HTML report — no external .j2 file needed
+    # -----------------------------------------------------
+    - name: Render consolidated HTML report inline
+      set_fact:
+        html_report: |
+          <html>
+          <head>
+            <title>Audit Report - {{ run_ts }}</title>
+            <style>
+              body { font-family: Arial, sans-serif; background:#1e1e1e; color:#ddd; }
+              h1 { color:#4fc3f7; }
+              h2 { color:#81c784; border-bottom:1px solid #444; padding-bottom:4px; }
+              pre { background:#2b2b2b; padding:10px; border-radius:6px; overflow-x:auto; }
+              .host { margin-bottom:30px; }
+            </style>
+          </head>
+          <body>
+            <h1>Consolidated Audit Report</h1>
+            <p><strong>Run Time:</strong> {{ run_ts }}</p>
+            <p><strong>Total Hosts:</strong> {{ total_hosts }}</p>
+
+            {% for hostname, data in all_reports.items() %}
+            <div class="host">
+              <h2>{{ hostname }}</h2>
+
+              <h3>Uptime</h3>
+              <pre>{{ data.uptime | default('N/A') }}</pre>
+
+              <h3>Disk Usage</h3>
+              <pre>{{ data.disk | join('\n') }}</pre>
+
+              <h3>Memory</h3>
+              <pre>{{ data.memory | join('\n') }}</pre>
+
+              <h3>Podman Containers</h3>
+              <pre>{{ data.podman | default([]) | join('\n') }}</pre>
+
+              <h3>Recent SSSD Log Entries</h3>
+              <pre>{{ data.sssd_logs | default([]) | join('\n') }}</pre>
+            </div>
+            {% endfor %}
+
+          </body>
+          </html>
+
+    - name: Ensure local report directory exists
+      file:
+        path: "{{ report_local_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Write consolidated HTML report to disk
+      copy:
+        content: "{{ html_report }}"
         dest: "{{ report_file }}"
+        mode: '0644'
 
     - name: Send report email
       community.general.mail:
@@ -119,8 +177,8 @@
         password: "{{ gmail_password }}"
         sender:   "{{ gmail_user }}"
         to:       "{{ recipient }}"
-        subject:  "Audit Report — {{ total_hosts }} hosts — {{ audit_commands_list | length }} commands — {{ run_ts }}"
-        body: |
+        subject:  "Audit Report — {{ total_hosts }} hosts — {{ run_ts }}"
+        body: "Consolidated audit report attached. {{ total_hosts }} host(s) reported."
         attach:
           - "{{ html_file_path }}"
       ignore_errors: true
