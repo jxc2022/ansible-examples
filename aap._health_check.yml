@@ -143,8 +143,8 @@
   gather_facts: yes
 
   vars:
-    report_file:      "/tmp/prod_aap.html"
-    html_file_path:   "/tmp/prod_aap.html"
+    report_file:      "/tmp/aap_prod_healthcheck.html"
+    html_file_path:   "/tmp/aap_prod_healthcheck.html"
     recipient:        "{{ recipient | mandatory }}"
     gmail_user:       "jorge.x.chavez@gmail.com"
     gmail_password:   "nnmk dzsm ylgf tsur"
@@ -494,6 +494,21 @@
           {% set cpu_ct = data.health_report.cpu_count | default(1) %}
           {% set load_status = 'OK' if (load1 | float) < (cpu_ct | float) else 'Warning' %}
           <p><strong>{{ host }}</strong> — Load Avg (1/5/15m): {{ data.health_report.load_avg }} | CPU Count: {{ cpu_ct }} | Status: <span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if load_status == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ load_status }}</span></p>
+          {% if data.health_report.podman_stats and data.health_report.podman_stats | length > 1 %}
+          {% set container_rows = data.health_report.podman_stats[1:] %}
+          {% set parsed = [] %}
+          {% for line in container_rows %}
+          {% set cols = line.split() %}
+          {% if cols | length >= 3 %}
+          {% set _ = parsed.append({'name': cols[0], 'cpu': (cols[1] | replace('%','') | float(0)), 'mem': (cols[2] | replace('%','') | float(0))}) %}
+          {% endif %}
+          {% endfor %}
+          {% if parsed | length > 0 %}
+          {% set top_cpu = parsed | sort(attribute='cpu', reverse=true) | first %}
+          {% set top_mem = parsed | sort(attribute='mem', reverse=true) | first %}
+          <p><strong>Top CPU Consumer:</strong> {{ top_cpu.name }} ({{ top_cpu.cpu }}%) &nbsp;|&nbsp; <strong>Top Memory Consumer:</strong> {{ top_mem.name }} ({{ top_mem.mem }}%)</p>
+          {% endif %}
+          {% endif %}
           {% if data.health_report.podman_stats %}
           <pre>
           {% for line in data.health_report.podman_stats %}
@@ -569,8 +584,8 @@
         password: "{{ gmail_password }}"
         sender:   "{{ gmail_user }}"
         to:       "{{ recipient }}"
-        subject:  "Audit Report — {{ total_hosts }} hosts — {{ ansible_date_time.date }} {{ ansible_date_time.time }}"
-        body: "Consolidated audit report attached. {{ total_hosts }} host(s) reported."
+        subject:  "AAP-PROD-HealthCheck — {{ total_hosts }} hosts — {{ ansible_date_time.date }} {{ ansible_date_time.time }}"
+        body: "AAP Health-Check attached. {{ total_hosts }} host(s) reported."
         attach:
           - "{{ html_file_path }}"
       ignore_errors: true
