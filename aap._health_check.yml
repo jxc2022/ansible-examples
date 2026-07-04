@@ -297,15 +297,19 @@
           <head>
               <title>AAP Consolidated Health Report</title>
               <style>
-                  body { font-family: Arial, sans-serif; margin: 20px; }
-                  h1 { color: #2a4d69; }
-                  h2 { color: #4b86b4; }
-                  h3 { color: #1b3c59; }
-                  pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
+                  body { font-family: Arial, sans-serif; margin: 20px; background: #121212; color: #e0e0e0; }
+                  h1 { color: #7db3e8; }
+                  h2 { color: #6fb98f; border-bottom: 1px solid #333; padding-bottom: 6px; }
+                  h3 { color: #a0c4e0; }
+                  pre { background: #1e1e1e; color: #d0d0d0; padding: 10px; border-radius: 5px; border: 1px solid #333; overflow-x: auto; }
+                  a { color: #7db3e8; }
                   table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-                  th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-                  th { background-color: #e8eef3; }
+                  th, td { border: 1px solid #333; padding: 8px; text-align: left; }
+                  th { background-color: #1f2a38; color: #cfe3f7; }
+                  tr:nth-child(even) { background-color: #1a1a1a; }
+                  tr:nth-child(odd) { background-color: #161616; }
                   .host-section { margin-bottom: 40px; }
+                  hr { border: none; border-top: 1px solid #333; }
               </style>
           </head>
           <body>
