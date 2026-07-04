@@ -53,7 +53,7 @@
       register: uptime_output
 
     - name: Check running Podman containers as ansible user
-      become_user: ansible
+      become_user: aap
       command: podman ps --format "table {{ '{{.Names}}' }}\t{{ '{{.Status}}' }}\t{{ '{{.Image}}' }}"
       register: podman_output
       ignore_errors: yes
