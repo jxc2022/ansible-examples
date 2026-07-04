@@ -317,7 +317,7 @@
           <p>Generated on {{ ansible_date_time.date }} at {{ ansible_date_time.time }}</p>
           <p><strong>AAP Version:</strong> {{ aap_version }} (Controller build {{ aap_controller_build }})</p>
           <p><strong>Subscription:</strong> {{ aap_subscription_name }} ({{ aap_license_type | capitalize }})
-             | <strong>License Status:</strong> {{ 'Compliant' if aap_license_compliant else 'Non-Compliant' }}
+             | <strong>License Status:</strong> <span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if aap_license_compliant else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ 'Compliant' if aap_license_compliant else 'Non-Compliant' }}</span>
              | <strong>Expires:</strong> {{ aap_license_expiration }}
              | <strong>Automated Instances:</strong> {{ aap_current_instances }} / {{ aap_instance_count }}
           </p>
@@ -338,27 +338,27 @@
               <tr>
                   <td>Automation Controller</td>
                   <td>/api/controller/v2/ping/</td>
-                  <td>{{ controller_health }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if controller_health == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ controller_health }}</span></td>
               </tr>
               <tr>
                   <td>Automation Hub</td>
                   <td>/api/galaxy/pulp/api/v3/status/</td>
-                  <td>{{ hub_health }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if hub_health == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ hub_health }}</span></td>
               </tr>
               <tr>
                   <td>Automation Gateway (ping)</td>
                   <td>/api/gateway/v1/ping/</td>
-                  <td>{{ gateway_ping_health }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if gateway_ping_health == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ gateway_ping_health }}</span></td>
               </tr>
               <tr>
                   <td>Automation Gateway (status)</td>
                   <td>/api/gateway/v1/status/</td>
-                  <td>{{ gateway_status_health }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if gateway_status_health == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ gateway_status_health }}</span></td>
               </tr>
               <tr>
                   <td>Automation Gateway (services)</td>
                   <td>/api/gateway/v1/services/</td>
-                  <td>{{ gateway_services_health }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if gateway_services_health == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ gateway_services_health }}</span></td>
               </tr>
               <tr>
                   <td>Event Driven Ansible</td>
@@ -388,10 +388,10 @@
               <tr>
                   <td>{{ host }}</td>
                   <td>{{ max_disk_val }}%</td>
-                  <td>{{ status }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if status == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ status }}</span></td>
                   <td>{{ data.health_report.podman | length }}</td>
                   <td>{{ data.health_report.uptime }}</td>
-                  <td>{{ sssd_status }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if sssd_status == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ sssd_status }}</span></td>
               </tr>
               {% endfor %}
           </table>
@@ -427,12 +427,12 @@
               <tr>
                   <td>AAP API Response Time</td>
                   <td>{{ aap_api_latency_ms }} ms</td>
-                  <td>{{ 'OK' if (aap_api_latency_ms | int) < 1000 else 'Warning' }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if (aap_api_latency_ms | int) < 1000 else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ 'OK' if (aap_api_latency_ms | int) < 1000 else 'Warning' }}</span></td>
               </tr>
               <tr>
                   <td>Active/Pending/Waiting Jobs</td>
                   <td>{{ aap_job_queue_depth }}</td>
-                  <td>{{ 'OK' if (aap_job_queue_depth | int(-1)) <= 10 and (aap_job_queue_depth | int(-1)) >= 0 else 'Warning' }}</td>
+                  <td><span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if ((aap_job_queue_depth | int(-1)) <= 10 and (aap_job_queue_depth | int(-1)) >= 0) else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ 'OK' if (aap_job_queue_depth | int(-1)) <= 10 and (aap_job_queue_depth | int(-1)) >= 0 else 'Warning' }}</span></td>
               </tr>
           </table>
           <h3>Per-Host Load Average &amp; Container Resource Usage</h3>
@@ -440,7 +440,7 @@
           {% set load1 = (data.health_report.load_avg.split(' ')[0] | default('0')) if data.health_report.load_avg != 'N/A' else '0' %}
           {% set cpu_ct = data.health_report.cpu_count | default(1) %}
           {% set load_status = 'OK' if (load1 | float) < (cpu_ct | float) else 'Warning' %}
-          <p><strong>{{ host }}</strong> — Load Avg (1/5/15m): {{ data.health_report.load_avg }} | CPU Count: {{ cpu_ct }} | Status: {{ load_status }}</p>
+          <p><strong>{{ host }}</strong> — Load Avg (1/5/15m): {{ data.health_report.load_avg }} | CPU Count: {{ cpu_ct }} | Status: <span style="{{ 'color:#ffffff;background-color:#2e7d32;font-weight:bold;padding:2px 8px;border-radius:4px;' if load_status == 'OK' else 'color:#ffffff;background-color:#c62828;font-weight:bold;padding:2px 8px;border-radius:4px;' }}">{{ load_status }}</span></p>
           {% if data.health_report.podman_stats %}
           <pre>
           {% for line in data.health_report.podman_stats %}
