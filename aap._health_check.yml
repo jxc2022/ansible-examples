@@ -59,6 +59,22 @@
       ignore_errors: yes
 
     # -----------------------------------------------------
+    # PERFORMANCE / SLOWNESS CHECKS
+    # -----------------------------------------------------
+    - name: Get system load average
+      command: cat /proc/loadavg
+      register: loadavg_output
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Get per-container CPU/memory usage snapshot
+      become_user: aap
+      command: podman stats --no-stream --format "table {{ '{{.Name}}' }}\t{{ '{{.CPUPerc}}' }}\t{{ '{{.MemPerc}}' }}\t{{ '{{.MemUsage}}' }}"
+      register: podman_stats_output
+      ignore_errors: yes
+      changed_when: false
+
+    # -----------------------------------------------------
     # SSSD LOG COLLECTION (last 1 hour)
     # -----------------------------------------------------
     - name: Collect recent SSSD errors
@@ -114,6 +130,9 @@
           podman: "{{ (podman_output.stdout_lines | default([]))[1:] if (podman_output.stdout_lines | default([]) | length > 0) else [] }}"
           sssd_logs: "{{ sssd_logs.stdout_lines | default([]) }}"
           postgres_disk: "{{ postgres_disk_info | default([]) }}"
+          load_avg: "{{ loadavg_output.stdout | default('N/A') }}"
+          cpu_count: "{{ ansible_processor_vcpus | default('N/A') }}"
+          podman_stats: "{{ podman_stats_output.stdout_lines | default([]) }}"
 
 
 # ---------------------------------------------------------
@@ -171,6 +190,22 @@
         return_content: yes
       register: aap_config
       ignore_errors: yes
+
+    - name: Query current AAP job queue depth (pending/waiting/running)
+      uri:
+        url: "{{ aap_api_base }}/jobs/?status__in=pending,waiting,running&page_size=1"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        return_content: yes
+      register: aap_job_queue
+      ignore_errors: yes
+
+    - name: Set performance facts
+      set_fact:
+        aap_job_queue_depth: "{{ aap_job_queue.json.count | default('N/A') }}"
+        aap_api_latency_ms: "{{ ((aap_gateway_ping.elapsed | default(0)) * 1000) | round(0, 'common') }}"
 
     - name: Set AAP version facts
       set_fact:
