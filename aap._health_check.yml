@@ -149,6 +149,8 @@
         aap_license_expiration: "{{ '%Y-%m-%d' | strftime(aap_config.json.license_info.license_date) if aap_config.json.license_info.license_date is defined else 'Unavailable' }}"
         aap_current_instances: "{{ aap_config.json.license_info.current_instances | default('N/A') }}"
         aap_instance_count: "{{ aap_config.json.license_info.instance_count | default('N/A') }}"
+        aap_account_number: "{{ aap_config.json.license_info.account_number | default('N/A') }}"
+        aap_subscription_id: "{{ aap_config.json.license_info.subscription_id | default('N/A') }}"
 
     # -----------------------------------------------------
     # Gather all host health data — hostname -> full hostvars
