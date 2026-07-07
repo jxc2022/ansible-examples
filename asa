@@ -1,0 +1,18 @@
+  curl -sk https://epmrmtmaw3p01.sap.mckesson.com/repo/installers/usa/asa-sft.repo -o /etc/yum.repos.d/asa.repo
+   74  cat /etc/yum.repos.d/asa.repo
+   75  dnf makecache
+   76  dnf install scaleft-server-tools
+   77  systemctl enable sftd.service
+   78  systemctl start sftd.service
+   79  systemctl status  sftd.service
+   80  echo "eyJzIjoiZDk4ZjBhZTktMmM3ZS00NDQ1LWI1NjctZGE0NWY2MjJjYTEzIiwidSI6Imh0dHBzOi8vYXBwLnNjYWxlZnQuY29tIn0=" > /var/lib/sftd/enrollment.token
+   81  systemctl start/status/enable sftd.service
+   82  systemctl restart sftd.service
+   83  systemctl status  sftd.service
+   84  cat /etc/sftd.yaml
+   85  cd /etc/sft/
+   86  ls
+   87  hostname -f
+   88  vi sftd.yaml
+   89  systemctl restart sftd.service
+   90  systemctl status sftd.service
