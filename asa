@@ -1,18 +1,87 @@
-  curl -sk https://epmrmtmaw3p01.sap.mckesson.com/repo/installers/usa/asa-sft.repo -o /etc/yum.repos.d/asa.repo
-   74  cat /etc/yum.repos.d/asa.repo
-   75  dnf makecache
-   76  dnf install scaleft-server-tools
-   77  systemctl enable sftd.service
-   78  systemctl start sftd.service
-   79  systemctl status  sftd.service
-   80  echo "eyJzIjoiZDk4ZjBhZTktMmM3ZS00NDQ1LWI1NjctZGE0NWY2MjJjYTEzIiwidSI6Imh0dHBzOi8vYXBwLnNjYWxlZnQuY29tIn0=" > /var/lib/sftd/enrollment.token
-   81  systemctl start/status/enable sftd.service
-   82  systemctl restart sftd.service
-   83  systemctl status  sftd.service
-   84  cat /etc/sftd.yaml
-   85  cd /etc/sft/
-   86  ls
-   87  hostname -f
-   88  vi sftd.yaml
-   89  systemctl restart sftd.service
-   90  systemctl status sftd.service
+---
+# install_scaleft_sftd.yml
+# Install and enroll the Okta ASA (ScaleFT) server agent (sftd).
+# Scoped to NEW server builds — assumes a fresh, unenrolled host.
+#
+# Enrollment token is a secret — supply via Vault or --extra-vars:
+#   ansible-vault encrypt_string '<enrollment-token>' --name vault_sftd_enrollment_token
+#
+# Run:
+#   ansible-playbook install_scaleft_sftd.yml -e target_hosts=web01 --ask-vault-pass
+
+- name: Install and enroll Okta ASA (ScaleFT) sftd agent
+  hosts: "{{ target_hosts | default('sft_servers') }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    sftd_repo_url: "https://epmrmtmaw3p01.sap.yellow.com/repo/installers/usa/asa-sft.repo"
+    sftd_repo_dest: "/etc/yum.repos.d/asa.repo"
+    sftd_package: "scaleft-server-tools"
+    sftd_config_file: "/etc/sft/sftd.yaml"
+    sftd_token_path: "/var/lib/sftd/enrollment.token"
+
+    # SECRET — supply via Vault (vault_sftd_enrollment_token) or --extra-vars.
+    sftd_enrollment_token: "{{ vault_sftd_enrollment_token | default('') }}"
+
+    # How this host presents itself to ASA. Defaults to the FQDN.
+    sftd_canonical_name: "{{ ansible_facts['fqdn'] }}"
+    sftd_config: |
+      # Managed by Ansible
+      CanonicalName: {{ sftd_canonical_name }}
+
+  tasks:
+    - name: Require an enrollment token
+      ansible.builtin.assert:
+        that:
+          - sftd_enrollment_token | length > 0
+        fail_msg: >-
+          No enrollment token supplied. Provide vault_sftd_enrollment_token (Vault)
+          or -e sftd_enrollment_token=...
+
+    - name: Deploy ScaleFT repo definition
+      ansible.builtin.get_url:
+        url: "{{ sftd_repo_url }}"
+        dest: "{{ sftd_repo_dest }}"
+        mode: "0644"
+        validate_certs: false          # mirrors `curl -k` — internal/self-signed CA
+
+    - name: Refresh dnf metadata for the ScaleFT repo
+      ansible.builtin.command:
+        cmd: "dnf makecache --repo=asa*"
+      changed_when: false
+
+    - name: Install {{ sftd_package }}
+      ansible.builtin.dnf:
+        name: "{{ sftd_package }}"
+        state: present
+
+    - name: Write sftd.yaml
+      ansible.builtin.copy:
+        content: "{{ sftd_config }}"
+        dest: "{{ sftd_config_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Drop enrollment token
+      ansible.builtin.copy:
+        content: "{{ sftd_enrollment_token }}"
+        dest: "{{ sftd_token_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Enable and start sftd
+      ansible.builtin.systemd:
+        name: sftd.service
+        enabled: true
+        state: started
+
+    - name: Confirm sftd is active
+      ansible.builtin.command:
+        cmd: systemctl is-active sftd.service
+      register: sftd_active
+      changed_when: false
+      failed_when: sftd_active.stdout != "active"
