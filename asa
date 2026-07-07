@@ -38,6 +38,13 @@
         fail_msg: >-
           No enrollment token supplied. Provide vault_sftd_enrollment_token (Vault)
           or -e sftd_enrollment_token=...
+    - name: Deploy ScaleFT repo definition
+      ansible.builtin.command:
+        cmd: >-
+          curl -sk --fail
+          {{ sftd_repo_url }}
+          -o {{ sftd_repo_dest }}
+        creates: "{{ sftd_repo_dest }}"
 
     - name: Deploy ScaleFT repo definition
       ansible.builtin.get_url:
