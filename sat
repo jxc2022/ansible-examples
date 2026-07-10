@@ -1,4 +1,9 @@
-
+    - name: Ensure subscription-manager manages repositories
+      ansible.builtin.lineinfile:
+        path: /etc/rhsm/rhsm.conf
+        regexp: '^\s*#?\s*manage_repos\s*='
+        line: "manage_repos = 1"
+        mode: "0644"
 # rhui_to_satellite.yml
 #
 # Removes cloud RHUI (Azure/AWS/GCP) configuration from RHEL hosts and hands
