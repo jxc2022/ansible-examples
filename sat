@@ -141,6 +141,147 @@
       ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} -q repolist"
       register: repolist_out
       changed_when: false
+
+
+
+****************
+te · YML
+---
+# rhui_to_satellite.yml
+#
+# Removes cloud RHUI (Azure/AWS/GCP) configuration from RHEL hosts and hands
+# repo management back to Red Hat Satellite via subscription-manager.
+#
+# Assumes the host is ALREADY registered to Satellite (subscription-manager register).
+#
+# Requirements:
+#   - community.general collection (ini_file, rhsm_repository)
+#   - become privileges
+#
+# Usage:
+#   ansible-playbook -i inventory rhui_to_satellite.yml \
+#       -e '{"satellite_repos":["rhel-9-for-x86_64-baseos-rpms","rhel-9-for-x86_64-appstream-rpms"]}'
+ 
+- name: Migrate RHEL hosts from cloud RHUI to Red Hat Satellite
+  hosts: all
+  become: true
+  gather_facts: true
+ 
+  vars:
+    # Repos to explicitly enable after cutover. Override per host/group.
+    # Leave empty to just let subscription-manager provide its default repos.
+    satellite_repos: []
+ 
+    # find(1) globs for RHUI repo definition files dropped in /etc/yum.repos.d.
+    # NOTE: none of these match the subscription-manager-managed 'redhat.repo'.
+    rhui_repo_file_globs:
+      - "rh-cloud.repo"
+      - "rhui-microsoft-azure-rhel*.repo"
+      - "redhat-rhui*.repo"
+      - "google-cloud*.repo"
+ 
+    # Also remove RHUI PKI material (client certs/keys). Set false to keep.
+    rhui_remove_pki: true
+ 
+  pre_tasks:
+    - name: Assert this is a Red Hat family host
+      ansible.builtin.assert:
+        that: ansible_facts.os_family == "RedHat"
+        fail_msg: "This playbook only targets RHEL/Red Hat family hosts."
+ 
+  tasks:
+    - name: Verify host is registered to Satellite
+      ansible.builtin.command: subscription-manager identity
+      register: sm_identity
+      changed_when: false
+      failed_when: sm_identity.rc != 0
+ 
+    - name: Show current subscription-manager identity
+      ansible.builtin.debug:
+        var: sm_identity.stdout_lines
+ 
+    # Cloud RHUI images ship rhsm.conf with manage_repos=0 so subscription-manager
+    # won't write redhat.repo. Flip it back on now that we're on Satellite.
+    - name: Ensure subscription-manager manages repositories
+      ansible.builtin.lineinfile:
+        path: /etc/rhsm/rhsm.conf
+        regexp: '^\s*#?\s*manage_repos\s*='
+        line: "manage_repos = 1"
+        mode: "0644"
+ 
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: rpm
+ 
+    - name: Identify installed RHUI client packages
+      ansible.builtin.set_fact:
+        rhui_installed_packages: "{{ ansible_facts.packages.keys() | select('search', 'rhui') | list }}"
+ 
+    - name: Show RHUI packages slated for removal
+      ansible.builtin.debug:
+        var: rhui_installed_packages
+ 
+    - name: Remove RHUI client packages
+      ansible.builtin.package:
+        name: "{{ rhui_installed_packages }}"
+        state: absent
+      when: rhui_installed_packages | length > 0
+ 
+    - name: Find leftover RHUI repo definition files
+      ansible.builtin.find:
+        paths: /etc/yum.repos.d
+        patterns: "{{ rhui_repo_file_globs }}"
+      register: rhui_repo_files
+ 
+    - name: Remove leftover RHUI repo definition files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ rhui_repo_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+ 
+    - name: Remove RHUI PKI material
+      ansible.builtin.file:
+        path: /etc/pki/rhui
+        state: absent
+      when: rhui_remove_pki | bool
+ 
+    - name: Clean package manager metadata
+      ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} clean all"
+      changed_when: true
+ 
+    # Regenerates /etc/yum.repos.d/redhat.repo from Satellite entitlement.
+    - name: Refresh subscription-manager entitlement data
+      ansible.builtin.command: subscription-manager refresh
+      changed_when: true
+ 
+    - name: Enable requested Satellite repositories
+      ansible.builtin.command:
+        argv: "{{ ['subscription-manager', 'repos'] + (satellite_repos | map('regex_replace', '^', '--enable=') | list) }}"
+      register: sm_repo_enable
+      changed_when: sm_repo_enable.rc == 0
+      when: satellite_repos | length > 0
+ 
+  post_tasks:
+    - name: List enabled repositories from subscription-manager
+      ansible.builtin.command: subscription-manager repos --list-enabled
+      register: sm_enabled
+      changed_when: false
+ 
+    - name: Show enabled Satellite repositories
+      ansible.builtin.debug:
+        var: sm_enabled.stdout_lines
+ 
+    - name: Verify package manager sees the Satellite repos
+      ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} -q repolist"
+      register: repolist_out
+      changed_when: false
+ 
+    - name: Show repolist
+      ansible.builtin.debug:
+        var: repolist_out.stdout_lines
+ 
  
     - name: Show repolist
       ansible.builtin.debug:
