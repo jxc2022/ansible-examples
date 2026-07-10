@@ -1,4 +1,10 @@
-    - name: Ensure subscription-manager manages repositories
+ - name: Enable requested Satellite repositories
+      ansible.builtin.command:
+        argv: "{{ ['subscription-manager', 'repos'] + (satellite_repos | map('regex_replace', '^', '--enable=') | list) }}"
+      register: sm_repo_enable
+      changed_when: sm_repo_enable.rc == 0
+      when: satellite_repos | length > 0
+- name: Ensure subscription-manager manages repositories
       ansible.builtin.lineinfile:
         path: /etc/rhsm/rhsm.conf
         regexp: '^\s*#?\s*manage_repos\s*='
