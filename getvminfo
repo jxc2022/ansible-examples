@@ -1,0 +1,109 @@
+---
+- name: Lookup Azure VM by IP address
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - azure_creds.yml
+
+  tasks:
+
+    # 1. Convert incoming IP list string → list
+    - name: Convert server_list string to a list of IPs
+      set_fact:
+        ip_list: "{{ server_list
+                     | replace('|', ',')
+                     | split(',')
+                     | map('trim')
+                     | select('ne','')
+                     | unique
+                     | list }}"
+
+    # 2. Authenticate to Azure (read‑only)
+    - name: Authenticate Azure CLI
+      ansible.builtin.shell: |
+        az login \
+          --service-principal \
+          -u "{{ azure_client_id }}" \
+          -p "{{ azure_client_secret }}" \
+          --tenant "{{ azure_tenant_id }}"
+      changed_when: false
+
+    # 3. Build OR expression for IP matching
+    - name: Build OR expression for IPs
+      set_fact:
+        ip_or_expression: "{{ ip_list
+                              | map('regex_replace',
+                                     '^(.*)$',
+                                     '(privateIp =~ \"\\1\" or publicIpId has \"\\1\")')
+                              | join(' or ') }}"
+
+    # 4. Build the Azure Resource Graph query
+    - name: Build Kusto query
+      set_fact:
+        full_query: |
+          resources
+          | where type =~ "microsoft.network/networkinterfaces"
+          | mv-expand ipconfig = properties.ipConfigurations
+          | extend privateIp = tostring(ipconfig.properties.privateIPAddress)
+          | extend publicIpId = tostring(ipconfig.properties.publicIPAddress.id)
+          | extend vmId = tostring(properties.virtualMachine.id)
+          | where {{ ip_or_expression }}
+          | extend vmName = tostring(split(vmId, "/")[-1])
+          | project privateIp, publicIpId, vmId, vmName, name, resourceGroup, subscriptionId
+
+    # 5. Execute the ARG query (correct quoting)
+    - name: Run ARG query
+      ansible.builtin.shell: >
+        az graph query -q '
+        resources
+        | where type =~ "microsoft.network/networkinterfaces"
+        | mv-expand ipconfig = properties.ipConfigurations
+        | extend privateIp = tostring(ipconfig.properties.privateIPAddress)
+        | extend publicIpId = tostring(ipconfig.properties.publicIPAddress.id)
+        | extend vmId = tostring(properties.virtualMachine.id)
+        | where {{ ip_or_expression }}
+        | extend vmName = tostring(split(vmId, "/")[-1])
+        | project privateIp, publicIpId, vmId, vmName, name, resourceGroup, subscriptionId
+        ' --output json
+      register: arg_output
+
+    # 6. Parse JSON results
+    - name: Parse ARG results
+      set_fact:
+        vm_data: "{{ arg_output.stdout | from_json }}"
+
+    # 7. Build a list of found IPs
+    - name: Build found IP list
+      set_fact:
+        found_ips: "{{ vm_data.data | map(attribute='privateIp') | list }}"
+
+    # 8. Build NOT FOUND list
+    - name: Build NOT FOUND list
+      set_fact:
+        not_found_ips: "{{ ip_list | difference(found_ips) }}"
+
+    # 9. CSV output for FOUND VMs
+    - name: CSV output for FOUND VMs
+      debug:
+        msg: |
+          {% if vm_data.data | length == 0 %}
+          No matching VMs found for any IPs.
+          {% else %}
+          IP,VMName,NICName,ResourceGroup,Subscription
+          {% for item in vm_data.data %}
+          {{ item.privateIp }},{{ item.vmName }},{{ item.name }},{{ item.resourceGroup }},{{ item.subscriptionId }}
+          {% endfor %}
+          {% endif %}
+
+    # 10. CSV output for NOT FOUND IPs
+    - name: CSV output for NOT FOUND IPs
+      debug:
+        msg: |
+          {% if not_found_ips | length == 0 %}
+          All IPs were found.
+          {% else %}
+          IP,Status
+          {% for ip in not_found_ips %}
+          {{ ip }},NOT_FOUND
+          {% endfor %}
+          {% endif %}
