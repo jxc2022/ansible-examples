@@ -1,3 +1,11 @@
+msg: >
+  IP,VMName,SerialNumber(dmidecodeUUID),NICName,ResourceGroup,Subscription
+
+  10.112.224.16,saptemp01,411bfb95-967d-4b41-a701-f3fd29b468e0,saptemp01114_z2,rg-usa-testing,31854b7f-0c6b-49b0-817e-7211ab9a688d
+_ansible_verbose_always: true
+changed: false
+_ansible_no_log: false
+
 dmidecode -t system
 # dmidecode 3.6
 Getting SMBIOS data from sysfs.
