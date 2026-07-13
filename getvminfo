@@ -1,4 +1,5 @@
 ---
+https://azure.microsoft.com/en-us/blog/accessing-and-using-azure-vm-unique-id/
 # Lookup Azure VM by IP address, including the OS-visible "serial number"
 # (SMBIOS System UUID, as printed by `dmidecode -t system` / `dmidecode -s system-uuid`
 # on the guest OS).
