@@ -1,30 +1,5 @@
 ---
-# Lookup Azure VM by IP address, including the OS-visible "serial number"
-# (SMBIOS System UUID, as printed by `dmidecode -t system` / `dmidecode -s system-uuid`
-# on the guest OS).
-#
-# Background: Azure exposes a VM Unique ID (Microsoft.Compute/virtualMachines
-# properties.vmId). On modern guests this string is IDENTICAL to the SMBIOS
-# UUID dmidecode prints -- no transformation needed. Verified directly against
-# a real Azure VM (SMBIOS 3.1.0 / dmidecode 3.6 / Hyper-V UEFI):
-#   ARM vmId            : 411bfb95-967d-4b41-a701-f3fd29b468e0
-#   dmidecode UUID       : 95fb1b41-7d96-414b-a701-f3fd29b468e0   <- WRONG, do not swap
-# (that mismatch is what an earlier version of this playbook produced by
-#  swapping when it shouldn't have)
-#
-# Caveat: dmidecode's own byte-ordering of the first three UUID groups
-# depends on the guest's SMBIOS version -- it only reverses them itself when
-# SMBIOS < 2.6 (very old/legacy guests). Virtually every current Azure VM
-# reports SMBIOS >= 2.6, so ARM's vmId can be used as-is as the "serial
-# number" / correlation key. If you ever hit a legacy guest where this
-# doesn't match, compare its `dmidecode -t system` UUID against `az vm show
-# --query vmId` directly rather than assuming a swap is needed.
-#
-# Note: Azure VMs generally do NOT populate a distinct/unique SMBIOS
-# "Serial Number" field, so the UUID is the field actually used to correlate
-# a guest OS to its Azure resource.
-
-- name: Lookup Azure VM by IP address
+- name: Lookup Azure VM by IP and pull guest SMBIOS serial number
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -34,16 +9,13 @@
     # 1. Convert incoming IP list string -> list
     - name: Convert server_list string to a list of IPs
       set_fact:
-        # NOTE: "split" is not a Jinja/Ansible filter. Use the Python string
-        # method instead (this was silently going to fail with
-        # "No filter named 'split'" every run).
         ip_list: "{{ (server_list | replace('|', ',')).split(',')
                      | map('trim')
                      | select('ne','')
                      | unique
                      | list }}"
 
-    # 2. Authenticate to Azure (read-only)
+    # 2. Authenticate to Azure
     - name: Authenticate Azure CLI
       ansible.builtin.shell: |
         az login \
@@ -52,14 +24,9 @@
           -p "{{ azure_client_secret }}" \
           --tenant "{{ azure_tenant_id }}"
       changed_when: false
-      # Prevents the client secret / login output from being written to logs
-      # or console at higher verbosity.
       no_log: true
 
-    # 3. Build OR expression for IP matching.
-    #    Matches both private IP and the *actual* public IP address (not the
-    #    public IP resource ID, which is a path string like
-    #    ".../publicIPAddresses/myip-01" and will never contain a dotted IP).
+    # 3. Build OR expression for IP matching (private IP or actual public IP address)
     - name: Build OR expression for IPs
       set_fact:
         ip_or_expression: "{{ ip_list
@@ -68,9 +35,8 @@
                                      '(privateIp =~ \"\\1\" or publicIpAddress =~ \"\\1\")')
                               | join(' or ') }}"
 
-    # 4. Build the Azure Resource Graph query (single source of truth --
-    #    the old playbook built this and then duplicated the whole query
-    #    inline again in the next task; that copy is now gone).
+    # 4. Build the Azure Resource Graph query -- resolves IP -> VM identity only.
+    #    This part remains 100% read-only.
     - name: Build Kusto query
       set_fact:
         full_query: |
@@ -96,48 +62,98 @@
             ) on $left.vmId == $right.vmResourceId
           | project privateIp, publicIpAddress, vmName, vmId, armVmUniqueId, name, resourceGroup, subscriptionId
 
-    # 5. Execute the ARG query
+    # 5. Execute the ARG query (read-only)
     - name: Run ARG query
       ansible.builtin.shell: |
         az graph query -q '{{ full_query }}' --first 1000 --output json
       register: arg_output
       changed_when: false
-      # NOTE: Azure Resource Graph caps a single query at 1000 rows
-      # (--first max). If you're matching against more than 1000 IPs/NICs
-      # at once, this needs --skip-token pagination added.
+      # NOTE: Azure Resource Graph caps a single query at 1000 rows without
+      # --skip-token pagination.
 
     # 6. Parse JSON results
     - name: Parse ARG results
       set_fact:
         vm_data: "{{ arg_output.stdout | from_json }}"
 
-    # 7. Build a list of found IPs
+    # 7. Build a list of found / not-found IPs
     - name: Build found IP list
       set_fact:
         found_ips: "{{ vm_data.data | map(attribute='privateIp') | list }}"
 
-    # 8. Build NOT FOUND list
     - name: Build NOT FOUND list
       set_fact:
         not_found_ips: "{{ ip_list | difference(found_ips) }}"
 
-    # 9. CSV output for FOUND VMs
-    #    SerialNumber == armVmUniqueId (ARM's vmId), used as-is -- verified
-    #    against a real VM to equal the guest's dmidecode UUID directly, no
-    #    transform needed (see header note).
+    # 8. Run Command: read the real SMBIOS serial number from each matched
+    #    VM. Uses --ids so it works regardless of which subscription/RG the
+    #    VM lives in. ignore_errors so one unreachable/stopped VM (agent not
+    #    responding, VM deallocated, etc.) doesn't abort the whole batch --
+    #    it's caught and reported per-VM below instead.
+    - name: Run dmidecode serial-number lookup on each matched VM (Linux only)
+      ansible.builtin.command:
+        argv:
+          - az
+          - vm
+          - run-command
+          - invoke
+          - --ids
+          - "{{ item.vmId }}"
+          - --command-id
+          - RunShellScript
+          - --scripts
+          - "dmidecode -s system-serial-number"
+          - --output
+          - json
+      loop: "{{ vm_data.data }}"
+      loop_control:
+        loop_var: item
+      register: run_command_results
+      changed_when: false
+      ignore_errors: true
+      when: vm_data.data | length > 0
+
+    # 9. Extract the serial number string from each Run Command response and
+    #    attach it to the matching VM record.
+    #    az vm run-command invoke returns JSON like:
+    #      {"value": [{"message": "Enable succeeded: \n[stdout]\n<serial>\n\n[stderr]\n"}]}
+    - name: Reset enriched VM list
+      set_fact:
+        vm_list_enriched: []
+
+    - name: Attach real SMBIOS serial number to each VM record
+      vars:
+        rc_ok: "{{ (rc_result.rc | default(1)) == 0 }}"
+        rc_message: "{{ ((rc_result.stdout | from_json).value[0].message) if rc_ok else '' }}"
+        serial_val: >-
+          {{ (rc_message.split('[stdout]')[1].split('[stderr]')[0] | trim)
+             if (rc_ok and '[stdout]' in rc_message and '[stderr]' in rc_message)
+             else ('ERROR: run-command failed (rc=' ~ (rc_result.rc | default('unknown')) ~ ')') }}
+      set_fact:
+        vm_list_enriched: "{{ vm_list_enriched + [ vm_data.data[idx] | combine({'serialNumber': serial_val}) ] }}"
+      loop: "{{ run_command_results.results | default([]) }}"
+      loop_control:
+        loop_var: rc_result
+        index_var: idx
+      when: vm_data.data | length > 0
+
+    # 10. CSV output for FOUND VMs -- SerialNumber is now the actual
+    #     dmidecode Serial Number string, suitable to feed straight into
+    #     ServiceNow CMDB. VmUUID (ARM vmId) is included too as a stable
+    #     correlation key, since it's cheap/read-only to obtain.
     - name: CSV output for FOUND VMs
       debug:
         msg: |
-          {% if vm_data.data | length == 0 %}
+          {% if vm_list_enriched | length == 0 %}
           No matching VMs found for any IPs.
           {% else %}
-          IP,VMName,SerialNumber(dmidecodeUUID),NICName,ResourceGroup,Subscription
-          {% for item in vm_data.data %}
-          {{ item.privateIp }},{{ item.vmName }},{{ item.armVmUniqueId | default('N/A') }},{{ item.name }},{{ item.resourceGroup }},{{ item.subscriptionId }}
+          IP,VMName,SerialNumber,VmUUID,NICName,ResourceGroup,Subscription
+          {% for item in vm_list_enriched %}
+          {{ item.privateIp }},{{ item.vmName }},{{ item.serialNumber }},{{ item.armVmUniqueId | default('N/A') }},{{ item.name }},{{ item.resourceGroup }},{{ item.subscriptionId }}
           {% endfor %}
           {% endif %}
 
-    # 10. CSV output for NOT FOUND IPs
+    # 11. CSV output for NOT FOUND IPs
     - name: CSV output for NOT FOUND IPs
       debug:
         msg: |
@@ -149,3 +165,4 @@
           {{ ip }},NOT_FOUND
           {% endfor %}
           {% endif %}
+
