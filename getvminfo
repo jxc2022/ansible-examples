@@ -1,24 +1,49 @@
 ---
+# Lookup Azure VM by IP address, including the OS-visible "serial number"
+# (SMBIOS System UUID, as printed by `dmidecode -t system` / `dmidecode -s system-uuid`
+# on the guest OS).
+#
+# Background: Azure exposes a VM Unique ID (Microsoft.Compute/virtualMachines
+# properties.vmId). This is the SAME 128-bit value the guest OS sees in its
+# SMBIOS System Information UUID field, EXCEPT the first three GUID groups are
+# byte-swapped between what ARM reports and what dmidecode prints inside the
+# guest (documented by Microsoft: "Accessing and Using Azure VM Unique ID").
+# The last two groups are unchanged. The swap is its own inverse, so the same
+# transform converts in either direction.
+#
+# Example (from Microsoft's own docs):
+#   dmidecode UUID : 090556DA-D4FA-764F-A9F1-63614EDA019A
+#   ARM vmId       : DA560509-FAD4-4F76-A9F1-63614EDA019A
+#
+# Note: Azure VMs generally do NOT populate a distinct/unique SMBIOS
+# "Serial Number" field, so the UUID is the field actually used to correlate
+# a guest OS to its Azure resource.
+
 - name: Lookup Azure VM by IP address
   hosts: localhost
   gather_facts: false
   vars_files:
     - azure_creds.yml
+  vars:
+    # Byte-swap pattern/replacement to convert between ARM vmId <-> dmidecode UUID.
+    # Groups 1 (4 bytes), 2 (2 bytes) and 3 (2 bytes) are reversed; groups 4/5 are untouched.
+    dmidecode_uuid_pattern: '^(.{2})(.{2})(.{2})(.{2})-(.{2})(.{2})-(.{2})(.{2})-(.*)$'
+    dmidecode_uuid_replacement: '\4\3\2\1-\6\5-\8\7-\9'
 
   tasks:
-
-    # 1. Convert incoming IP list string → list
+    # 1. Convert incoming IP list string -> list
     - name: Convert server_list string to a list of IPs
       set_fact:
-        ip_list: "{{ server_list
-                     | replace('|', ',')
-                     | split(',')
+        # NOTE: "split" is not a Jinja/Ansible filter. Use the Python string
+        # method instead (this was silently going to fail with
+        # "No filter named 'split'" every run).
+        ip_list: "{{ (server_list | replace('|', ',')).split(',')
                      | map('trim')
                      | select('ne','')
                      | unique
                      | list }}"
 
-    # 2. Authenticate to Azure (read‑only)
+    # 2. Authenticate to Azure (read-only)
     - name: Authenticate Azure CLI
       ansible.builtin.shell: |
         az login \
@@ -27,17 +52,25 @@
           -p "{{ azure_client_secret }}" \
           --tenant "{{ azure_tenant_id }}"
       changed_when: false
+      # Prevents the client secret / login output from being written to logs
+      # or console at higher verbosity.
+      no_log: true
 
-    # 3. Build OR expression for IP matching
+    # 3. Build OR expression for IP matching.
+    #    Matches both private IP and the *actual* public IP address (not the
+    #    public IP resource ID, which is a path string like
+    #    ".../publicIPAddresses/myip-01" and will never contain a dotted IP).
     - name: Build OR expression for IPs
       set_fact:
         ip_or_expression: "{{ ip_list
                               | map('regex_replace',
                                      '^(.*)$',
-                                     '(privateIp =~ \"\\1\" or publicIpId has \"\\1\")')
+                                     '(privateIp =~ \"\\1\" or publicIpAddress =~ \"\\1\")')
                               | join(' or ') }}"
 
-    # 4. Build the Azure Resource Graph query
+    # 4. Build the Azure Resource Graph query (single source of truth --
+    #    the old playbook built this and then duplicated the whole query
+    #    inline again in the next task; that copy is now gone).
     - name: Build Kusto query
       set_fact:
         full_query: |
@@ -47,55 +80,78 @@
           | extend privateIp = tostring(ipconfig.properties.privateIPAddress)
           | extend publicIpId = tostring(ipconfig.properties.publicIPAddress.id)
           | extend vmId = tostring(properties.virtualMachine.id)
+          | join kind=leftouter (
+              resources
+              | where type =~ "microsoft.network/publicipaddresses"
+              | extend publicIpAddress = tostring(properties.ipAddress)
+              | project publicIpResourceId = id, publicIpAddress
+            ) on $left.publicIpId == $right.publicIpResourceId
           | where {{ ip_or_expression }}
           | extend vmName = tostring(split(vmId, "/")[-1])
-          | project privateIp, publicIpId, vmId, vmName, name, resourceGroup, subscriptionId
+          | join kind=leftouter (
+              resources
+              | where type =~ "microsoft.compute/virtualmachines"
+              | extend armVmUniqueId = tostring(properties.vmId)
+              | project vmResourceId = id, armVmUniqueId
+            ) on $left.vmId == $right.vmResourceId
+          | project privateIp, publicIpAddress, vmName, vmId, armVmUniqueId, name, resourceGroup, subscriptionId
 
-    # 5. Execute the ARG query (correct quoting)
+    # 5. Execute the ARG query
     - name: Run ARG query
-      ansible.builtin.shell: >
-        az graph query -q '
-        resources
-        | where type =~ "microsoft.network/networkinterfaces"
-        | mv-expand ipconfig = properties.ipConfigurations
-        | extend privateIp = tostring(ipconfig.properties.privateIPAddress)
-        | extend publicIpId = tostring(ipconfig.properties.publicIPAddress.id)
-        | extend vmId = tostring(properties.virtualMachine.id)
-        | where {{ ip_or_expression }}
-        | extend vmName = tostring(split(vmId, "/")[-1])
-        | project privateIp, publicIpId, vmId, vmName, name, resourceGroup, subscriptionId
-        ' --output json
+      ansible.builtin.shell: |
+        az graph query -q '{{ full_query }}' --first 1000 --output json
       register: arg_output
+      changed_when: false
+      # NOTE: Azure Resource Graph caps a single query at 1000 rows
+      # (--first max). If you're matching against more than 1000 IPs/NICs
+      # at once, this needs --skip-token pagination added.
 
     # 6. Parse JSON results
     - name: Parse ARG results
       set_fact:
         vm_data: "{{ arg_output.stdout | from_json }}"
 
-    # 7. Build a list of found IPs
+    # 7. Compute the dmidecode-matching UUID ("serial number") for each found
+    #    VM and accumulate an enriched list (Ansible has no per-item map with
+    #    a per-item-derived value, so this builds vm_list_enriched one
+    #    iteration at a time).
+    - name: Reset enriched VM list
+      set_fact:
+        vm_list_enriched: []
+
+    - name: Attach serial_number (dmidecode UUID) field per VM
+      set_fact:
+        vm_list_enriched: "{{ vm_list_enriched + [ item | combine({'serialNumber':
+                              (item.armVmUniqueId | regex_replace(dmidecode_uuid_pattern, dmidecode_uuid_replacement))
+                              if item.armVmUniqueId else 'N/A'}) ] }}"
+      loop: "{{ vm_data.data }}"
+      loop_control:
+        loop_var: item
+
+    # 8. Build a list of found IPs
     - name: Build found IP list
       set_fact:
-        found_ips: "{{ vm_data.data | map(attribute='privateIp') | list }}"
+        found_ips: "{{ vm_list_enriched | map(attribute='privateIp') | list }}"
 
-    # 8. Build NOT FOUND list
+    # 9. Build NOT FOUND list
     - name: Build NOT FOUND list
       set_fact:
         not_found_ips: "{{ ip_list | difference(found_ips) }}"
 
-    # 9. CSV output for FOUND VMs
+    # 10. CSV output for FOUND VMs (now includes SerialNumber == dmidecode UUID)
     - name: CSV output for FOUND VMs
       debug:
         msg: |
-          {% if vm_data.data | length == 0 %}
+          {% if vm_list_enriched | length == 0 %}
           No matching VMs found for any IPs.
           {% else %}
-          IP,VMName,NICName,ResourceGroup,Subscription
-          {% for item in vm_data.data %}
-          {{ item.privateIp }},{{ item.vmName }},{{ item.name }},{{ item.resourceGroup }},{{ item.subscriptionId }}
+          IP,VMName,SerialNumber(dmidecodeUUID),NICName,ResourceGroup,Subscription
+          {% for item in vm_list_enriched %}
+          {{ item.privateIp }},{{ item.vmName }},{{ item.serialNumber }},{{ item.name }},{{ item.resourceGroup }},{{ item.subscriptionId }}
           {% endfor %}
           {% endif %}
 
-    # 10. CSV output for NOT FOUND IPs
+    # 11. CSV output for NOT FOUND IPs
     - name: CSV output for NOT FOUND IPs
       debug:
         msg: |
