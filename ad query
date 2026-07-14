@@ -1,17 +1,30 @@
 # Get-ADGroupMembers-Email.ps1
-# Pulls members of an AD group and emails the list as a CSV attachment.
+# Finds every AD group matching a wildcard, pulls members of each, and emails the
+# combined list as a CSV attachment.
 
-$groupName = "yellow-na-osu-eng"
-$adServer  = "na.corp.yellow.com"
-$dateStamp = Get-Date -Format "yyyy-MM-dd"
+$groupFilter = "*yellow*"          # wildcard match against group Name, e.g. "*yellow*" or "yellow-na-*"
+$adServer    = "na.corp.yellow.com"
+$dateStamp   = Get-Date -Format "yyyy-MM-dd"
 
-$groupMembers = Get-ADGroupMember -Identity $groupName -Recursive -Server $adServer |
-    Where-Object { $_.objectClass -eq "user" } |
-    ForEach-Object {
-        Get-ADUser -Identity $_.SamAccountName -Server $adServer -Properties DisplayName |
-        Select-Object SamAccountName, DisplayName
-    } |
-    Sort-Object SamAccountName
+# Find every group whose name matches the wildcard.
+$groups = Get-ADGroup -Filter "Name -like '$groupFilter'" -Server $adServer
+
+if (-not $groups) {
+    Write-Error "No AD groups matched filter '$groupFilter'"
+    exit
+}
+
+# Loop through each matching group and pull its (recursive) user members, tagging
+# each row with the group it came from so the combined CSV stays traceable.
+$groupMembers = foreach ($group in $groups) {
+    Get-ADGroupMember -Identity $group -Recursive -Server $adServer |
+        Where-Object { $_.objectClass -eq "user" } |
+        ForEach-Object {
+            Get-ADUser -Identity $_.SamAccountName -Server $adServer -Properties DisplayName |
+            Select-Object @{Name = "GroupName"; Expression = { $group.Name }}, SamAccountName, DisplayName
+        }
+}
+$groupMembers = $groupMembers | Sort-Object GroupName, SamAccountName
 
 # Table version for a quick visual in the body (kept separate from the plain-text $Body below —
 # reusing the same name would silently overwrite it, since PowerShell variable names are
@@ -27,7 +40,7 @@ $groupMembers | Export-Csv -Path $AttachmentPath -NoTypeInformation
 $From = "jorge.chavez@yellow.com"
 $To = @("jorge.chavez@yellow.com")
 $Subject = "AD members $dateStamp"
-$Body = "AD members for group '$groupName' as of $dateStamp. Full list attached as CSV.`n`n$tableText"
+$Body = "AD members for groups matching '$groupFilter' ($($groups.Count) group(s) found) as of $dateStamp. Full list attached as CSV.`n`n$tableText"
 $SMTPServer = "ndhmail.yellow.com"
 $SMTPPort = 587
 $UseSSL = $false
