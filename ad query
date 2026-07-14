@@ -1,0 +1,43 @@
+$groupName = "mck-na-osu-eng"
+$adServer  = "na.corp.yellow.com"
+
+$groupMembers = Get-ADGroupMember -Identity $groupName -Recursive -Server $adServer |
+    Where-Object { $_.objectClass -eq "user" } |
+    ForEach-Object {
+        Get-ADUser -Identity $_.SamAccountName -Properties DisplayName |
+        Select-Object SamAccountName, DisplayName
+    } |
+    Sort-Object SamAccountName
+
+$body = $groupMembers | Format-Table -AutoSize | Out-String
+
+# Send email with attachment
+$From = "jorge.chavez@yellow.com"
+$To = @("jorge.chavez@yellow.com")
+$Subject = "Ad members $dateStamp"
+$Body = "ad members $dateStamp."
+$SMTPServer = "ndhmail.yellow.com"
+$SMTPPort = 587
+$UseSSL = $false
+$Attachment = $groupMembers
+
+# Load encrypted credentials
+$CredentialPath = "C:\jorgesmtp_creds.xml"
+if (-Not (Test-Path $CredentialPath)) {
+    Write-Error "Credential file not found at $CredentialPath"
+    exit
+}
+
+try {
+    $Credential = Import-Clixml -Path $CredentialPath
+
+    Send-MailMessage -From $From -To $To -Subject $Subject -Body $Body `
+        -SmtpServer $SMTPServer -Port $SMTPPort -UseSsl:$UseSSL `
+        -Attachments $Attachment -DeliveryNotificationOption OnSuccess `
+        -BodyAsHtml -Credential $Credential
+
+    Write-Output "Email sent successfully to $To"
+}
+catch {
+    Write-Error "Failed to send email: $_"
+}
