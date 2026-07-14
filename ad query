@@ -1,25 +1,36 @@
-$groupName = "mck-na-osu-eng"
+# Get-ADGroupMembers-Email.ps1
+# Pulls members of an AD group and emails the list as a CSV attachment.
+
+$groupName = "yellow-na-osu-eng"
 $adServer  = "na.corp.yellow.com"
+$dateStamp = Get-Date -Format "yyyy-MM-dd"
 
 $groupMembers = Get-ADGroupMember -Identity $groupName -Recursive -Server $adServer |
     Where-Object { $_.objectClass -eq "user" } |
     ForEach-Object {
-        Get-ADUser -Identity $_.SamAccountName -Properties DisplayName |
+        Get-ADUser -Identity $_.SamAccountName -Server $adServer -Properties DisplayName |
         Select-Object SamAccountName, DisplayName
     } |
     Sort-Object SamAccountName
 
-$body = $groupMembers | Format-Table -AutoSize | Out-String
+# Table version for a quick visual in the body (kept separate from the plain-text $Body below —
+# reusing the same name would silently overwrite it, since PowerShell variable names are
+# case-insensitive).
+$tableText = $groupMembers | Format-Table -AutoSize | Out-String
 
-# Send email with attachment
+# Export to CSV so we have an actual file to attach (Send-MailMessage -Attachments needs a
+# file path, not an object array).
+$AttachmentPath = Join-Path $env:TEMP "ad-members-$dateStamp.csv"
+$groupMembers | Export-Csv -Path $AttachmentPath -NoTypeInformation
+
+# Email settings
 $From = "jorge.chavez@yellow.com"
 $To = @("jorge.chavez@yellow.com")
-$Subject = "Ad members $dateStamp"
-$Body = "ad members $dateStamp."
+$Subject = "AD members $dateStamp"
+$Body = "AD members for group '$groupName' as of $dateStamp. Full list attached as CSV.`n`n$tableText"
 $SMTPServer = "ndhmail.yellow.com"
 $SMTPPort = 587
 $UseSSL = $false
-$Attachment = $groupMembers
 
 # Load encrypted credentials
 $CredentialPath = "C:\jorgesmtp_creds.xml"
@@ -30,14 +41,15 @@ if (-Not (Test-Path $CredentialPath)) {
 
 try {
     $Credential = Import-Clixml -Path $CredentialPath
-
     Send-MailMessage -From $From -To $To -Subject $Subject -Body $Body `
         -SmtpServer $SMTPServer -Port $SMTPPort -UseSsl:$UseSSL `
-        -Attachments $Attachment -DeliveryNotificationOption OnSuccess `
-        -BodyAsHtml -Credential $Credential
-
+        -Attachments $AttachmentPath -DeliveryNotificationOption OnSuccess `
+        -Credential $Credential
     Write-Output "Email sent successfully to $To"
 }
 catch {
     Write-Error "Failed to send email: $_"
+}
+finally {
+    Remove-Item -Path $AttachmentPath -ErrorAction SilentlyContinue
 }
