@@ -1,0 +1,264 @@
+---
+# Satellite 6 / Capsule health check + HTML email report - single file
+# (based on Red Hat KB 6993863)
+#
+# FQDNs are hardcoded below - edit satellite_fqdn and capsule_fqdns to match
+# your environment. Runs entirely against localhost since these are just
+# outbound HTTPS API calls; no SSH access to the Satellite/Capsule hosts
+# is required, only outbound HTTPS reachability from the AAP execution
+# environment.
+#
+# No credentials are required by default: per the KB article, /api/ping,
+# the Capsule foreman-proxy /version endpoint, and the Pulp status endpoint
+# are all designed to be unauthenticated so monitoring tools can call them
+# without logging in. If your environment has locked /api/ping behind auth
+# (e.g. via a reverse proxy), set satellite_username/satellite_password
+# below or via an AAP credential/survey and they'll be used automatically.
+#
+# Requires the community.general collection (for the mail module) on the
+# AAP execution environment: ansible-galaxy collection install community.general
+
+- name: Check Red Hat Satellite and Capsule health, email HTML report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    satellite_fqdn: satellite.example.com
+    capsule_fqdns:
+      - capsule01.example.com
+      - capsule02.example.com
+      - capsule03.example.com
+      - capsule04.example.com
+    satellite_validate_certs: false
+    capsule_validate_certs: false
+    pulp_min_free_bytes: 1073741824  # 1 GiB
+    # satellite_username: myuser
+    # satellite_password: mypass
+
+    # ---- Email settings ----
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    smtp_secure: starttls          # none | starttls | always
+    mail_from: satellite-monitor@example.com
+    mail_to:
+      - jorge.x.chavez@gmail.com
+    # smtp_username: myuser
+    # smtp_password: mypass
+
+  tasks:
+    # ---------------- Satellite ----------------
+    - name: Query Satellite /api/ping endpoint
+      ansible.builtin.uri:
+        url: "https://{{ satellite_fqdn }}/api/ping"
+        method: GET
+        user: "{{ satellite_username | default(omit) }}"
+        password: "{{ satellite_password | default(omit) }}"
+        force_basic_auth: "{{ satellite_username is defined }}"
+        validate_certs: "{{ satellite_validate_certs }}"
+        return_content: true
+        status_code: 200
+      register: satellite_ping
+
+    - name: Set Satellite health facts
+      ansible.builtin.set_fact:
+        satellite_db_active: "{{ satellite_ping.json.results.foreman.database.active }}"
+        satellite_katello_status: "{{ satellite_ping.json.results.katello.status }}"
+        satellite_service_statuses: "{{ satellite_ping.json.results.katello.services }}"
+
+    - name: Identify any katello services not reporting ok
+      ansible.builtin.set_fact:
+        satellite_bad_services: "{{ satellite_service_statuses | dict2items | selectattr('value.status', 'ne', 'ok') | map(attribute='key') | list }}"
+
+    - name: Report Satellite health status
+      ansible.builtin.debug:
+        msg: >-
+          Satellite {{ satellite_fqdn }} health:
+          database_active={{ satellite_db_active }},
+          katello_status={{ satellite_katello_status }},
+          failing_services={{ satellite_bad_services }}
+
+    # ---------------- Capsules (looped, no external files) ----------------
+    - name: Query each Capsule foreman-proxy /version endpoint
+      ansible.builtin.uri:
+        url: "https://{{ item }}:9090/version"
+        method: GET
+        validate_certs: "{{ capsule_validate_certs }}"
+        return_content: true
+        status_code: 200
+      register: capsule_proxy_versions
+      loop: "{{ capsule_fqdns }}"
+      ignore_errors: true
+
+    - name: Query each Capsule Pulp status endpoint
+      ansible.builtin.uri:
+        url: "https://{{ item }}/pulp/api/v3/status/"
+        method: GET
+        validate_certs: "{{ capsule_validate_certs }}"
+        return_content: true
+        status_code: 200
+      register: capsule_pulp_statuses
+      loop: "{{ capsule_fqdns }}"
+      ignore_errors: true
+
+    - name: Build per-capsule health results
+      ansible.builtin.set_fact:
+        capsule_health_results: "{{ (capsule_health_results | default([])) + [ {'fqdn': pair.0.item, 'foreman_proxy_ok': proxy_ok, 'pulp_workers_ok': workers_ok, 'pulp_content_apps_ok': content_ok, 'pulp_db_ok': db_ok, 'pulp_free_storage_ok': free_ok, 'healthy': (proxy_ok and workers_ok and content_ok and db_ok and free_ok)} ] }}"
+      vars:
+        proxy_ok: "{{ (pair.0.failed | default(false) == false) and (pair.0.json.modules is defined) }}"
+        workers_ok: "{{ (pair.1.failed | default(false) == false) and ((pair.1.json.online_workers | default([]) | length) > 0) }}"
+        content_ok: "{{ (pair.1.failed | default(false) == false) and ((pair.1.json.online_content_apps | default([]) | length) > 0) }}"
+        db_ok: "{{ (pair.1.failed | default(false) == false) and (pair.1.json.database_connection.connected | default(false)) }}"
+        free_ok: "{{ (pair.1.failed | default(false) == false) and ((pair.1.json.storage.free | default(0)) | int >= (pulp_min_free_bytes | int)) }}"
+        # Note: redis_connection intentionally not checked - depends on
+        # Satellite version / pulp settings per the KB article.
+      loop: "{{ capsule_proxy_versions.results | zip(capsule_pulp_statuses.results) | list }}"
+      loop_control:
+        loop_var: pair
+
+    - name: Report Capsule health status
+      ansible.builtin.debug:
+        msg: >-
+          Capsule {{ item.fqdn }} health:
+          foreman_proxy_ok={{ item.foreman_proxy_ok }},
+          pulp_workers_ok={{ item.pulp_workers_ok }},
+          pulp_content_apps_ok={{ item.pulp_content_apps_ok }},
+          pulp_db_ok={{ item.pulp_db_ok }},
+          pulp_free_storage_ok={{ item.pulp_free_storage_ok }}
+      loop: "{{ capsule_health_results }}"
+
+    # ---------------- Overall status ----------------
+    - name: Compute Satellite overall health
+      ansible.builtin.set_fact:
+        satellite_healthy: >-
+          {{ (satellite_db_active | bool == true) and
+             (satellite_katello_status == 'ok') and
+             (satellite_bad_services | length == 0) }}
+
+    - name: Compute combined overall health
+      ansible.builtin.set_fact:
+        overall_healthy: >-
+          {{ (satellite_healthy | bool) and
+             ((capsule_health_results | selectattr('healthy', 'equalto', false) | list | length) == 0) }}
+
+    # ---------------- HTML report + email (inline template) ----------------
+    - name: Gather date/time facts for the report
+      ansible.builtin.setup:
+        gather_subset:
+          - '!all'
+          - 'date_time'
+
+    - name: Set report file path
+      ansible.builtin.set_fact:
+        health_report_path: "/tmp/satellite_health_report_{{ ansible_date_time.iso8601_basic_short }}.html"
+
+    - name: Render HTML health report
+      ansible.builtin.copy:
+        dest: "{{ health_report_path }}"
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="utf-8">
+          <title>Satellite / Capsule Health Report</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; margin: 20px; color: #222; }
+            h1 { font-size: 20px; }
+            h2 { font-size: 16px; margin-top: 24px; }
+            table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+            th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; font-size: 13px; }
+            th { background: #f0f0f0; }
+            .ok { color: #1a7f37; font-weight: bold; }
+            .fail { color: #c0392b; font-weight: bold; }
+            .summary { padding: 10px 14px; margin-bottom: 16px; border-radius: 4px; font-size: 15px; }
+            .summary.ok { background: #e6f4ea; }
+            .summary.fail { background: #fdecea; }
+            .footer { margin-top: 20px; font-size: 11px; color: #888; }
+          </style>
+          </head>
+          <body>
+            <h1>Red Hat Satellite / Capsule Health Report</h1>
+            <p>Generated: {{ ansible_date_time.iso8601 }}</p>
+
+            <div class="summary {{ 'ok' if overall_healthy else 'fail' }}">
+              Overall status:
+              <span class="{{ 'ok' if overall_healthy else 'fail' }}">{{ 'HEALTHY' if overall_healthy else 'UNHEALTHY' }}</span>
+            </div>
+
+            <h2>Satellite: {{ satellite_fqdn }}</h2>
+            <table>
+              <tr><th>Check</th><th>Result</th></tr>
+              <tr>
+                <td>Database active</td>
+                <td class="{{ 'ok' if satellite_db_active else 'fail' }}">{{ satellite_db_active }}</td>
+              </tr>
+              <tr>
+                <td>Katello overall status</td>
+                <td class="{{ 'ok' if satellite_katello_status == 'ok' else 'fail' }}">{{ satellite_katello_status }}</td>
+              </tr>
+              <tr>
+                <td>Failing services</td>
+                <td class="{{ 'ok' if (satellite_bad_services | length == 0) else 'fail' }}">
+                  {{ satellite_bad_services | join(', ') if satellite_bad_services else 'none' }}
+                </td>
+              </tr>
+            </table>
+
+            <h2>Capsules</h2>
+            <table>
+              <tr>
+                <th>FQDN</th>
+                <th>Foreman-proxy</th>
+                <th>Pulp workers</th>
+                <th>Pulp content apps</th>
+                <th>Pulp DB</th>
+                <th>Pulp free storage</th>
+                <th>Overall</th>
+              </tr>
+              {% for c in capsule_health_results %}
+              <tr>
+                <td>{{ c.fqdn }}</td>
+                <td class="{{ 'ok' if c.foreman_proxy_ok else 'fail' }}">{{ c.foreman_proxy_ok }}</td>
+                <td class="{{ 'ok' if c.pulp_workers_ok else 'fail' }}">{{ c.pulp_workers_ok }}</td>
+                <td class="{{ 'ok' if c.pulp_content_apps_ok else 'fail' }}">{{ c.pulp_content_apps_ok }}</td>
+                <td class="{{ 'ok' if c.pulp_db_ok else 'fail' }}">{{ c.pulp_db_ok }}</td>
+                <td class="{{ 'ok' if c.pulp_free_storage_ok else 'fail' }}">{{ c.pulp_free_storage_ok }}</td>
+                <td class="{{ 'ok' if c.healthy else 'fail' }}">{{ 'OK' if c.healthy else 'FAIL' }}</td>
+              </tr>
+              {% endfor %}
+            </table>
+
+            <div class="footer">Generated by AAP job: satellite_capsule_healthcheck.yml</div>
+          </body>
+          </html>
+
+    - name: Email HTML health report
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port | default(25) }}"
+        username: "{{ smtp_username | default(omit) }}"
+        password: "{{ smtp_password | default(omit) }}"
+        secure: "{{ smtp_secure | default('starttls') }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: >-
+          [{{ 'OK' if overall_healthy else 'ALERT' }}] Satellite/Capsule Health Report -
+          {{ ansible_date_time.date }}
+        subtype: html
+        body: "{{ lookup('file', health_report_path) }}"
+
+    # ---------------- Fail job if unhealthy (after email is sent) ----------------
+    - name: Fail if Satellite is unhealthy
+      ansible.builtin.fail:
+        msg: >-
+          Satellite {{ satellite_fqdn }} is UNHEALTHY:
+          db_active={{ satellite_db_active }}
+          katello_status={{ satellite_katello_status }}
+          failing_services={{ satellite_bad_services }}
+      when: not (satellite_healthy | bool)
+
+    - name: Fail if any Capsule is unhealthy
+      ansible.builtin.fail:
+        msg: >-
+          Unhealthy capsules:
+          {{ capsule_health_results | selectattr('healthy', 'equalto', false) | map(attribute='fqdn') | list }}
+      when: capsule_health_results | selectattr('healthy', 'equalto', false) | list | length > 0
