@@ -65,8 +65,8 @@
       ansible.builtin.command:
         cmd: >
           subscription-manager register
-          --username "{{ aap }}"
-          --password "{{ Husker45# }}"
+          --username "{{ jorge.x.chavez@gmail.com  }}"
+          --password "{{ Husker45#  }}"
       register: rhsm_register
       no_log: true
       when: "'This system is not yet registered' in rhsm_identity.stdout or rhsm_identity.rc != 0"
