@@ -68,7 +68,7 @@
           --username "{{ jorge.x.chavez@gmail.com  }}"
           --password "{{ Husker45#  }}"
       register: rhsm_register
-      no_log: true
+      no_log: false
       when: "'This system is not yet registered' in rhsm_identity.stdout or rhsm_identity.rc != 0"
 
     - name: Disable all repositories
