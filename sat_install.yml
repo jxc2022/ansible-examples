@@ -1,0 +1,140 @@
+---
+# install_satellite_6_19.yml
+#
+# Installs Red Hat Satellite 6.19 Server on a freshly provisioned RHEL 9 host.
+# Based on the official Red Hat docs:
+# https://docs.redhat.com/en/documentation/red_hat_satellite/6.19/html-single/installing_satellite_server_in_a_connected_network_environment/
+#
+# Target host requirements (Red Hat minimums):
+#   - RHEL 9 (x86_64), @Base package group only, no other software installed
+#   - 4 CPU cores, 20 GB RAM, 4 GB swap
+#   - SELinux enforcing or permissive (not disabled)
+#   - Unique FQDN hostname, synchronized system clock
+#   - Dedicated host — do not reuse an existing system
+#
+# Required extra_vars (pass via AAP survey or -e):
+#   rhsm_username                 Red Hat Customer Portal username
+#   rhsm_password                 Red Hat Customer Portal password        (mark sensitive)
+#   satellite_admin_password      Password for the Satellite "admin" UI user (mark sensitive)
+#
+# Optional extra_vars (defaults shown):
+#   satellite_version: "6.19"
+#   satellite_org: "My_Organization"
+#   satellite_location: "My_Location"
+#   satellite_admin_username: "admin"
+
+- name: Install Red Hat Satellite 6.19 Server
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    satellite_version: "6.19"
+    satellite_org: "Molly"
+    satellite_location: "KC"
+    satellite_admin_username: "admin"
+
+  pre_tasks:
+    - name: Fail if target is not RHEL 9
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == "RedHat"
+          - ansible_facts['distribution_major_version'] == "9"
+        fail_msg: >-
+          Satellite {{ satellite_version }} Server requires RHEL 9 (x86_64).
+          Detected {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+        success_msg: "OS check passed: RHEL {{ ansible_facts['distribution_version'] }}"
+
+    - name: Fail if required credentials were not supplied
+      ansible.builtin.assert:
+        that:
+          - rhsm_username is defined and rhsm_username | length > 0
+          - rhsm_password is defined and rhsm_password | length > 0
+          - satellite_admin_password is defined and satellite_admin_password | length > 0
+        fail_msg: >-
+          rhsm_username, rhsm_password, and satellite_admin_password must all be
+          supplied as extra_vars (use the AAP survey rather than committing them to source).
+
+  tasks:
+    - name: Check current subscription-manager registration status
+      ansible.builtin.command: subscription-manager identity
+      register: rhsm_identity
+      changed_when: false
+      failed_when: false
+
+    - name: Register system with Red Hat Subscription Management
+      ansible.builtin.command:
+        cmd: >
+          subscription-manager register
+          --username "{{ aap }}"
+          --password "{{ Husker45# }}"
+      register: rhsm_register
+      no_log: true
+      when: "'This system is not yet registered' in rhsm_identity.stdout or rhsm_identity.rc != 0"
+
+    - name: Disable all repositories
+      ansible.builtin.command:
+        cmd: subscription-manager repos --disable=*
+      changed_when: true
+
+    - name: Enable required repositories for Satellite {{ satellite_version }}
+      ansible.builtin.command:
+        cmd: >
+          subscription-manager repos
+          --enable=rhel-9-for-x86_64-baseos-rpms
+          --enable=rhel-9-for-x86_64-appstream-rpms
+          --enable=satellite-{{ satellite_version }}-for-rhel-9-x86_64-rpms
+          --enable=satellite-maintenance-{{ satellite_version }}-for-rhel-9-x86_64-rpms
+      changed_when: true
+
+    - name: Upgrade all packages
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+      register: dnf_upgrade
+
+    - name: Reboot if the upgrade replaced the running kernel
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: dnf_upgrade.changed and ansible_facts['os_family'] == "RedHat"
+
+    - name: Install the satellite package
+      ansible.builtin.dnf:
+        name: satellite
+        state: present
+
+    - name: Run satellite-installer (this can take 30-60+ minutes)
+      ansible.builtin.command:
+        cmd: >
+          satellite-installer --scenario satellite
+          --foreman-initial-organization "{{ satellite_org }}"
+          --foreman-initial-location "{{ satellite_location }}"
+          --foreman-initial-admin-username "{{ satellite_admin_username }}"
+          --foreman-initial-admin-password "{{ satellite_admin_password }}"
+      environment:
+        LC_ALL: en_US.UTF-8
+      register: satellite_install
+      no_log: true
+      async: 7200
+      poll: 30
+      changed_when: "'Success!' in satellite_install.stdout | default('')"
+
+    - name: Show tail of installer log for confirmation
+      ansible.builtin.command: tail -n 40 /var/log/foreman-installer/satellite.log
+      register: installer_log
+      changed_when: false
+
+    - name: Display installer log tail
+      ansible.builtin.debug:
+        var: installer_log.stdout_lines
+
+  post_tasks:
+    - name: Verify satellite-maintain reports a healthy service status
+      ansible.builtin.command: satellite-maintain service status
+      register: service_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display service status
+      ansible.builtin.debug:
+        var: service_status.stdout_lines
