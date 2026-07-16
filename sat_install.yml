@@ -33,39 +33,60 @@
     satellite_location: "KC"
     satellite_admin_username: "admin"
 
-  pre_tasks:
+  tasks:
+    - name: Install the satellite package
+      ansible.builtin.dnf:
+        name: satellite
+        state: present
+ 
     - name: Run satellite-installer (this can take 30-60+ minutes)
-      ansible.builtin.command:
-        cmd: >
-          satellite-installer --scenario satellite
-          --foreman-initial-organization "{{ satellite_org }}"
-          --foreman-initial-location "{{ satellite_location }}"
-          --foreman-initial-admin-username "{{ satellite_admin_username }}"
-          --foreman-initial-admin-password "{{ satellite_admin_password }}"
+      # NOTE: deliberately NOT using ansible's async/poll here. Combining
+      # `become: true` with `async` is a long-standing Ansible issue where the
+      # status file written by the escalated (root) process can't be
+      # reconciled by the poller, causing "ASYNC FAILED ... jid=None" even
+      # though the underlying command would have succeeded. Instead, this
+      # backgrounds satellite-installer with nohup/setsid and blocks the
+      # (synchronous, non-async) shell task until it exits, so the install
+      # survives an SSH/connection drop without tripping the async bug.
+      ansible.builtin.shell: |
+        set -e
+        LOGFILE=/var/log/foreman-installer/ansible-satellite-install.log
+        setsid nohup satellite-installer --scenario satellite \
+          --foreman-initial-organization "{{ satellite_org }}" \
+          --foreman-initial-location "{{ satellite_location }}" \
+          --foreman-initial-admin-username "{{ satellite_admin_username }}" \
+          --foreman-initial-admin-password "{{ satellite_admin_password }}" \
+          > "$LOGFILE" 2>&1 < /dev/null &
+        INSTALLER_PID=$!
+        echo "$INSTALLER_PID" > /tmp/satellite-installer.pid
+        while kill -0 "$INSTALLER_PID" 2>/dev/null; do
+          sleep 20
+        done
+        wait "$INSTALLER_PID"
+      args:
+        executable: /bin/bash
       environment:
         LC_ALL: en_US.UTF-8
       register: satellite_install
       no_log: true
-      async: 7200
-      poll: 30
-      changed_when: "'Success!' in satellite_install.stdout | default('')"
-
+      changed_when: true
+ 
     - name: Show tail of installer log for confirmation
       ansible.builtin.command: tail -n 40 /var/log/foreman-installer/satellite.log
       register: installer_log
       changed_when: false
-
+ 
     - name: Display installer log tail
       ansible.builtin.debug:
         var: installer_log.stdout_lines
-
+ 
   post_tasks:
     - name: Verify satellite-maintain reports a healthy service status
       ansible.builtin.command: satellite-maintain service status
       register: service_status
       changed_when: false
       failed_when: false
-
+ 
     - name: Display service status
       ansible.builtin.debug:
         var: service_status.stdout_lines
