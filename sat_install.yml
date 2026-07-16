@@ -34,59 +34,89 @@
     satellite_admin_username: "admin"
 
   tasks:
-    - name: Install the satellite package
-      ansible.builtin.dnf:
-        name: satellite
-        state: present
- 
-    - name: Run satellite-installer (this can take 30-60+ minutes)
-      # NOTE: deliberately NOT using ansible's async/poll here. Combining
-      # `become: true` with `async` is a long-standing Ansible issue where the
-      # status file written by the escalated (root) process can't be
-      # reconciled by the poller, causing "ASYNC FAILED ... jid=None" even
-      # though the underlying command would have succeeded. Instead, this
-      # backgrounds satellite-installer with nohup/setsid and blocks the
-      # (synchronous, non-async) shell task until it exits, so the install
-      # survives an SSH/connection drop without tripping the async bug.
+      # The satellite-installer step below is split into launch / poll / check
+    # tasks rather than one long-blocking task. Two independent problems rule
+    # out a single task here:
+    #   1. `become: true` + ansible `async`/`poll` is a known Ansible bug:
+    #      the status file written by the escalated (root) process can't be
+    #      reconciled by the poller, causing "ASYNC FAILED ... jid=None".
+    #   2. Holding one SSH session open and silent for 30-60+ minutes (no
+    #      output flowing over it) is exactly what NAT/firewall idle-timeout
+    #      settings kill, which surfaces as "Failed to connect to the host
+    #      via ssh" once the connection is dropped mid-task.
+    # Instead: drop a small script on disk, launch it detached (setsid +
+    # nohup, immune to the SSH session ending), and poll for a completion
+    # marker file with `until`/`retries` — each poll is its own short-lived
+    # connection, so nothing stays idle long enough to be reaped.
+    - name: Deploy satellite-installer launch script
+      ansible.builtin.copy:
+        dest: /root/run_satellite_installer.sh
+        mode: "0700"
+        content: |
+          #!/bin/bash
+          set -e
+          LOGFILE=/var/log/foreman-installer/ansible-satellite-install.log
+          satellite-installer --scenario satellite \
+            --foreman-initial-organization "{{ satellite_org }}" \
+            --foreman-initial-location "{{ satellite_location }}" \
+            --foreman-initial-admin-username "{{ satellite_admin_username }}" \
+            --foreman-initial-admin-password "{{ satellite_admin_password }}" \
+            > "$LOGFILE" 2>&1
+          echo $? > /root/satellite-installer.rc
+          touch /root/satellite-installer.done
+      no_log: true
+
+    - name: Launch satellite-installer in the background (this can take 30-60+ minutes)
       ansible.builtin.shell: |
-        set -e
-        LOGFILE=/var/log/foreman-installer/ansible-satellite-install.log
-        setsid nohup satellite-installer --scenario satellite \
-          --foreman-initial-organization "{{ satellite_org }}" \
-          --foreman-initial-location "{{ satellite_location }}" \
-          --foreman-initial-admin-username "{{ satellite_admin_username }}" \
-          --foreman-initial-admin-password "{{ satellite_admin_password }}" \
-          > "$LOGFILE" 2>&1 < /dev/null &
-        INSTALLER_PID=$!
-        echo "$INSTALLER_PID" > /tmp/satellite-installer.pid
-        while kill -0 "$INSTALLER_PID" 2>/dev/null; do
-          sleep 20
-        done
-        wait "$INSTALLER_PID"
+        rm -f /root/satellite-installer.done /root/satellite-installer.rc
+        setsid nohup /root/run_satellite_installer.sh < /dev/null > /dev/null 2>&1 &
+        disown
       args:
         executable: /bin/bash
-      environment:
-        LC_ALL: en_US.UTF-8
-      register: satellite_install
-      no_log: true
+      register: satellite_install_launch
       changed_when: true
- 
+
+    - name: Wait for satellite-installer to finish
+      ansible.builtin.stat:
+        path: /root/satellite-installer.done
+      register: installer_done
+      until: installer_done.stat.exists
+      retries: 240 # 240 * 15s = up to 60 minutes
+      delay: 15
+
+    - name: Read satellite-installer result code
+      ansible.builtin.command: cat /root/satellite-installer.rc
+      register: installer_rc
+      changed_when: false
+
+    - name: Fail if satellite-installer exited non-zero
+      ansible.builtin.fail:
+        msg: >-
+          satellite-installer failed (exit code {{ installer_rc.stdout | trim }}).
+          See /var/log/foreman-installer/satellite.log on the target for details.
+      when: installer_rc.stdout | trim != "0"
+
+    - name: Clean up installer launch script
+      ansible.builtin.file:
+        path: /root/run_satellite_installer.sh
+        state: absent
+
     - name: Show tail of installer log for confirmation
       ansible.builtin.command: tail -n 40 /var/log/foreman-installer/satellite.log
       register: installer_log
       changed_when: false
- 
+
     - name: Display installer log tail
       ansible.builtin.debug:
         var: installer_log.stdout_lines
- 
+
   post_tasks:
     - name: Verify satellite-maintain reports a healthy service status
       ansible.builtin.command: satellite-maintain service status
       register: service_status
       changed_when: false
       failed_when: false
- 
+
     - name: Display service status
       ansible.builtin.debug:
         var: service_status.stdout_lines
