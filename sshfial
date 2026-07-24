@@ -1,0 +1,13 @@
+[root@vm-np-c-gagw-1 ~]# tcpdump -i eth0 -nn host 10.30.48.208 and port 22
+[ 3972.840691] hv_netvsc 7ced8d64-dab8-7ced-8d64-dab87ced8d64 eth0: entered promiscuous mode
+[ 3972.840739] mlx5_core 20c5:00:02.0 eth1: entered promiscuous mode
+dropped privs to tcpdump
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on eth0, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+15:32:52.871367 IP 10.30.48.208.56154 > 10.202.146.20.22: Flags [S], seq 1824082999, win 64240, options [mss 1284,sackOK,TS val 3134663908 ecr 0,nop,wscale 7], length 0
+15:32:52.871422 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466706480 ecr 3134663908,nop,wscale 7], length 0
+15:32:53.889139 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466707498 ecr 3134663908,nop,wscale 7], length 0
+15:32:55.937130 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466709546 ecr 3134663908,nop,wscale 7], length 0
+15:32:59.969117 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466713578 ecr 3134663908,nop,wscale 7], length 0
+15:33:08.353114 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466721962 ecr 3134663908,nop,wscale 7], length 0
+15:33:24.737104 IP 10.202.146.20.22 > 10.30.48.208.56154: Flags [S.], seq 1117921132, ack 1824083000, win 65160, options [mss 1460,sackOK,TS val 1466738346 ecr 3134663908,nop,wscale 7], length 0
