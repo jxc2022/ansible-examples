@@ -1,0 +1,432 @@
+# SSSD Troubleshooting Runbook — Active Directory
+
+**Primary symptom addressed:** an account is "UNIX enabled" in AD (has `uidNumber`,
+`gidNumber`, is a member of a UNIX-enabled group) but `id <user>` and
+`getent passwd <user>` return nothing on the Linux host.
+
+---
+
+## 0. Rule out the non-bugs first
+
+Two behaviours look like failures but are correct:
+
+| What you ran | Why it returns nothing |
+|---|---|
+| `getent passwd` (no argument) | Domain users are never enumerated unless `enumerate = True`. That setting is off by default and should stay off — it hammers large directories. Always query by name: `getent passwd alice`. |
+| `id alice` | If `use_fully_qualified_names = True`, you must query `alice@corp.example.com`. |
+
+Check which applies:
+
+```bash
+grep -E 'enumerate|use_fully_qualified_names|full_name_format' /etc/sssd/sssd.conf
+```
+
+---
+
+## 1. Triage — which layer is broken?
+
+Run these three in order. The first one that fails tells you where to look.
+
+```bash
+# Layer 1 — is SSSD even talking to a DC?
+sssctl domain-status corp.example.com
+
+# Layer 2 — identity resolution
+getent passwd alice
+id alice
+sssctl user-show alice
+
+# Layer 3 — authorization (only relevant if layer 2 works)
+sssctl user-checks alice -s sshd -a acct
+```
+
+Interpretation:
+
+- **`Online status: Offline`** → stop here, go to §6 (connectivity / Kerberos).
+- **Layer 2 empty, layer 1 Online** → identity problem, go to §2.
+- **Layer 2 works, login still denied** → authorization problem, go to §5.
+
+---
+
+## 2. The #1 AD cause: Global Catalog does not replicate POSIX attributes
+
+SSSD's AD provider queries the **Global Catalog on port 3268** for lookups. AD does
+**not** include `uidNumber`, `gidNumber`, `unixHomeDirectory`, or `loginShell` in the
+GC's partial attribute set unless an admin explicitly marked them for replication.
+
+Result: the attributes exist on the DC, the identity team can see them in ADUC, and
+SSSD still resolves nothing — silently, with `ldap_id_mapping = False`.
+
+### Confirm it
+
+```bash
+kinit youruser@CORP.EXAMPLE.COM
+
+# Normal LDAP against the DC — port 389
+ldapsearch -H ldap://dc01.corp.example.com:389 -Y GSSAPI \
+  -b "DC=corp,DC=example,DC=com" "(sAMAccountName=alice)" \
+  uidNumber gidNumber unixHomeDirectory loginShell
+
+# Global Catalog — port 3268
+ldapsearch -H ldap://dc01.corp.example.com:3268 -Y GSSAPI \
+  -b "DC=corp,DC=example,DC=com" "(sAMAccountName=alice)" \
+  uidNumber gidNumber
+```
+
+**Diagnosis:** port 389 returns values, port 3268 returns them empty → confirmed.
+
+### Fix A — client side (fast, per host)
+
+```ini
+# /etc/sssd/sssd.conf
+[domain/corp.example.com]
+ad_enable_gc = False
+```
+
+```bash
+sss_cache -E && systemctl restart sssd
+id alice
+```
+
+Trade-off: disables Global Catalog lookups, so cross-domain resolution in a
+multi-domain forest gets slower or stops working. Acceptable on a single-domain
+forest; discuss with the AD team otherwise.
+
+### Fix B — server side (correct, forest-wide)
+
+Have AD admins open the **Active Directory Schema** snap-in and tick
+*"Replicate this attribute to the Global Catalog"* on:
+
+- `uidNumber`
+- `gidNumber`
+- `unixHomeDirectory`
+- `loginShell`
+- `gecos` (optional)
+
+Allow time for forest-wide replication, then retest without `ad_enable_gc = False`.
+
+---
+
+## 3. Other identity-layer causes, in order of likelihood
+
+### 3.1 `ldap_id_mapping` set wrong
+
+```bash
+grep ldap_id_mapping /etc/sssd/sssd.conf
+```
+
+| Value | Behaviour |
+|---|---|
+| `True` (realmd default) | SSSD **ignores** AD's `uidNumber`/`gidNumber` and derives POSIX IDs algorithmically from the SID. Users always resolve, but with IDs that won't match NFS/other systems. |
+| `False` | SSSD uses the directory's POSIX attributes. Any account missing a complete set does **not** resolve at all. |
+
+If the organisation manages uidNumbers deliberately, this must be `False` — and then
+every account needs both `uidNumber` **and** `gidNumber` populated.
+
+### 3.2 Search base too narrow
+
+```bash
+grep -E 'ldap_user_search_base|ldap_group_search_base|ldap_search_base' /etc/sssd/sssd.conf
+```
+
+Classic signature: users in one OU resolve, users in another don't. Widen the base or
+add additional bases:
+
+```ini
+ldap_user_search_base = DC=corp,DC=example,DC=com
+ldap_group_search_base = DC=corp,DC=example,DC=com
+```
+
+### 3.3 `min_id` / `max_id` silently filtering
+
+```bash
+grep -E 'min_id|max_id' /etc/sssd/sssd.conf
+```
+
+Default `min_id = 1000`. A POSIX-enabled account with `uidNumber = 500` is dropped with
+no log entry at default debug levels. Compare the user's actual uidNumber (from the
+`ldapsearch` in §2) against the configured range.
+
+### 3.4 Incomplete POSIX attributes
+
+Provisioning tools sometimes set `uidNumber` and stop. SSSD requires at minimum
+`uidNumber` and `gidNumber`. Verify with the port-389 `ldapsearch` above.
+
+Also check the user's **primary group** actually exists as a resolvable group object:
+
+```bash
+getent group <gidNumber>
+```
+
+### 3.5 `filter_users` / `filter_groups`
+
+```bash
+grep -E 'filter_users|filter_groups' /etc/sssd/sssd.conf
+```
+
+Anything listed here is excluded from NSS regardless of directory state.
+
+### 3.6 Trusted / child domain not enabled
+
+```bash
+grep -E 'ad_enabled_domains|subdomain' /etc/sssd/sssd.conf
+sssctl domain-list
+```
+
+If the failing users live in a different domain of the forest, that domain must be
+resolvable and not excluded by `ad_enabled_domains`.
+
+---
+
+## 4. Read the logs — the definitive step
+
+When the checks above are inconclusive, turn up debug and read the actual LDAP query
+SSSD issued. This almost always makes the cause obvious in a single line.
+
+```ini
+# /etc/sssd/sssd.conf
+[domain/corp.example.com]
+debug_level = 9
+
+[nss]
+debug_level = 9
+```
+
+```bash
+systemctl restart sssd
+sss_cache -E
+id alice                       # reproduce the failure
+
+grep -iE 'base|filter|search' /var/log/sssd/sssd_corp.example.com.log | tail -40
+```
+
+Look for the search base and LDAP filter SSSD used, and whether the reply contained
+zero entries or entries missing attributes. Turn `debug_level` back down afterwards —
+level 9 is extremely verbose.
+
+Useful log files:
+
+| File | Contains |
+|---|---|
+| `sssd_<domain>.log` | LDAP/Kerberos backend, search bases, access decisions |
+| `sssd_nss.log` | `getent` / `id` resolution path |
+| `sssd_pam.log` | Login-time authentication and account checks |
+| `krb5_child.log` | Kerberos ticket acquisition failures |
+| `ldap_child.log` | GSSAPI bind failures against LDAP |
+
+---
+
+## 5. If identity works but login is denied
+
+Different problem, different suspects. Symptom in `journalctl -u sshd`:
+
+```
+Access denied for user alice by PAM account configuration
+```
+
+Diagnostic:
+
+```bash
+sssctl user-checks alice -s sshd -a acct
+```
+
+### 5.1 AD GPO enforcement — the most common cause
+
+RHEL 8+ defaults to `ad_gpo_access_control = enforcing`. SSSD independently evaluates
+the AD Group Policy rights **"Allow log on locally"** and **"Allow log on through
+Remote Desktop Services"**. Users who pass every LDAP check are still denied if those
+GPO rights don't list them.
+
+Test without changing behaviour:
+
+```ini
+[domain/corp.example.com]
+ad_gpo_access_control = permissive
+```
+
+Permissive mode logs what it *would* have denied. If the denials disappear, the GPO is
+the cause — fix it in AD rather than leaving enforcement off.
+
+```bash
+grep -i gpo /var/log/sssd/sssd_corp.example.com.log | tail -30
+```
+
+### 5.2 `simple_allow_groups` name mismatch
+
+The value must match the **resolved** group name. With
+`use_fully_qualified_names = True`, write `unixadmins@corp.example.com`, not
+`unixadmins`.
+
+### 5.3 Membership only via primary GID
+
+If the allow-group is the user's primary group, confirm the group object itself
+resolves and lists the user:
+
+```bash
+getent group unixadmins
+id alice
+```
+
+### 5.4 `ldap_access_order` / `ldap_access_filter`
+
+```bash
+grep -E 'ldap_access_order|ldap_access_filter|access_provider' /etc/sssd/sssd.conf
+```
+
+An `expire` order or a custom filter on `accountExpires` / `userAccountControl` can
+deny accounts that otherwise look healthy.
+
+---
+
+## 6. Backend offline / Kerberos failures
+
+If `sssctl domain-status` reports **Offline**, identity lookups serve stale cache only —
+accounts created after the host went offline will appear not to exist. Work through:
+
+```bash
+# 1. Time skew — breaks Kerberos above ~5 minutes
+timedatectl
+chronyc sources -v
+
+# 2. Reachability and DNS
+ping -c2 dc01.corp.example.com
+dig +short _ldap._tcp.corp.example.com SRV
+cat /etc/resolv.conf
+
+# 3. Host keytab validity
+klist -kte /etc/krb5.keytab
+kinit -k && klist
+
+# 4. What SSSD says
+grep -iE 'offline|error|denied|skew|cannot' /var/log/sssd/sssd_corp.example.com.log | tail -40
+```
+
+### Keytab gotchas
+
+- **`ipa-getkeytab` / `adcli` append, they don't replace.** Multiple KVNOs accumulate
+  in one file and Kerberos selects the **highest** KVNO — which may be a stale key.
+  When re-keying, delete the keytab first rather than fetching on top of it.
+- **`hostname -f` must match the enrolled principal.** A short hostname produces
+  `host/shortname@` with an empty realm and fails preauth immediately.
+- **A cloned VM inherits the source host's identity.** If `/etc/krb5.keytab`,
+  `/etc/ipa/default.conf`, and `/etc/sssd/sssd.conf` all reference a different machine's
+  name, the clone is impersonating it — and re-keying breaks the original host.
+- **Forward and reverse DNS must agree** with the enrolled name. Kerberos canonicalises
+  via DNS; a mismatch causes intermittent, hard-to-read failures.
+- **Pin the name on enrollment** with `--hostname=`. Uninstall routines can restore a
+  stale hostname from `/var/lib/ipa-client/sysrestore/`, and the subsequent install will
+  silently enroll under the wrong name.
+
+### Cache reset
+
+`sss_cache -E` is often not enough. Full reset:
+
+```bash
+systemctl stop sssd
+rm -rf /var/lib/sss/db/*
+systemctl start sssd
+```
+
+---
+
+## 7. Quick reference — commands
+
+```bash
+# State
+sssctl domain-list
+sssctl domain-status <domain>
+sssctl user-show <user>
+sssctl user-checks <user> -s sshd -a acct
+sssctl config-check
+
+# Resolution
+getent passwd <user>
+getent group <group>
+id <user>
+getent passwd -s sss <user>      # force SSSD, bypass /etc/passwd
+getent passwd -s files <user>    # local only — reveals shadowing
+
+# Cache
+sss_cache -E
+sss_cache -u <user>
+systemctl stop sssd; rm -rf /var/lib/sss/db/*; systemctl start sssd
+
+# Kerberos
+klist -kte /etc/krb5.keytab
+kinit -k
+kvno host/$(hostname -f)
+
+# Join state
+realm list
+adcli info corp.example.com
+```
+
+---
+
+## 8. Access control with `realm`
+
+`realm permit` writes SSSD's **simple** access provider. Note that it sets
+`access_provider = simple`, which means AD GPO checks and IPA HBAC rules no longer
+apply on that host — access becomes locally managed.
+
+```bash
+realm deny --all                    # default deny
+realm permit -g unixadmins          # allow a group
+realm permit alice                  # allow a user
+realm permit --withdraw alice       # revoke
+realm list                          # login-policy: allow-permitted-logins
+```
+
+Resulting config:
+
+```ini
+[domain/corp.example.com]
+access_provider = simple
+simple_allow_groups = unixadmins
+simple_allow_users = alice
+```
+
+Caveats:
+
+- Local accounts in `/etc/passwd` and `root` are **never** affected by SSSD access
+  rules. Use `sshd`'s `AllowUsers`/`DenyUsers` or `/etc/security/access.conf` for those.
+- Groups must be resolvable (`getent group <name>`) or the rule silently matches nobody.
+- Always test from a second terminal with a root session held open.
+- For fleet-wide policy, prefer central control (AD GPO, or IPA HBAC) over per-host
+  `simple` rules.
+
+---
+
+## 9. Local account shadowing
+
+`files` precedes `sss` in `/etc/nsswitch.conf`, so a local account with the same name as
+a directory account **wins**. The directory identity becomes unreachable and no SSSD
+access rule applies to it.
+
+Detect:
+
+```bash
+getent passwd -s files alice
+getent passwd -s sss   alice
+grep '^alice:' /etc/passwd
+```
+
+If both return a result, resolve the collision before configuring access rules. Watch
+for service accounts created by application installers (for example the `aap` account
+created by Ansible Automation Platform) that happen to collide with directory names.
+
+---
+
+## 10. Escalation checklist
+
+Collect before raising a ticket with the AD or identity team:
+
+1. `sssctl domain-status <domain>` output
+2. `sssctl user-show <user>` output
+3. Both `ldapsearch` results from §2 (ports 389 and 3268)
+4. Relevant `/etc/sssd/sssd.conf` settings:
+   `ldap_id_mapping`, `ad_enable_gc`, `*_search_base`, `min_id`, `max_id`,
+   `use_fully_qualified_names`, `access_provider`
+5. `debug_level = 9` excerpt showing the search base and LDAP filter used
+6. The user's actual `uidNumber` / `gidNumber` as seen on the DC
+7. `journalctl -u sshd` excerpt if the symptom is login denial
