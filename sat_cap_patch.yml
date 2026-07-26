@@ -63,7 +63,7 @@
     # --- Report --------------------------------------------------------------
     report_local_dir: "/tmp/reports"
     recipient: "jorge.x.chavez@gmail.com"
-
+    gmail_password:   "nnmk dzsm ylgf tsur"
     gmail_user: "jorge.x.chavez@gmail.com"
 
     # Gmail app password. Deliberately NOT hardcoded -- this file will end up in
@@ -71,7 +71,7 @@
     #   export GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'   (picked up below)
     #   ansible-playbook ... -e @gmail_secret.yml --ask-vault-pass
     #   AAP: a custom credential type that injects GMAIL_APP_PASSWORD
-    gmail_password: "{{ lookup('ansible.builtin.env', 'GMAIL_APP_PASSWORD') }}"
+   
 
     report_email_enabled: true
     report_email_smtp_host: "smtp.gmail.com"
@@ -175,12 +175,12 @@
           ansible.builtin.debug:
             var: sat_health_pre.stdout_lines
 
-        - name: Take an offline backup before patching (optional, off by default)
-          ansible.builtin.command: >-
-            satellite-maintain backup offline {{ satellite_backup_dir }}
-            --assumeyes --skip-pulp-content
-          when: satellite_take_backup | bool
-          changed_when: true
+        # - name: Take an offline backup before patching (optional, off by default)
+        #   ansible.builtin.command: >-
+        #     satellite-maintain backup offline {{ satellite_backup_dir }}
+        #     --assumeyes --skip-pulp-content
+        #   when: satellite_take_backup | bool
+        #   changed_when: true
 
         # Subcommands are start/stop/status/is-enabled -- NOT on/off.
         - name: Enable maintenance mode (serve 503 during the update)
