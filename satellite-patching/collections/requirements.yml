@@ -1,0 +1,4 @@
+---
+# Installed by AAP's Project sync (ansible-galaxy collection install -r collections/requirements.yml).
+# Nothing external required yet — everything used here is in ansible.builtin.
+collections: []

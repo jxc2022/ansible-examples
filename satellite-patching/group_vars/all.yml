@@ -1,0 +1,27 @@
+---
+# --- Health check behaviour -------------------------------------------------
+# Labels to skip during `satellite-maintain health check`, e.g. checks that
+# are known-noisy in your environment. Leave empty to run the full set.
+satellite_maintain_health_whitelist: []
+
+# Fail the play if the pre-update health check reports failures instead of
+# only warning. Keep this true for a production run.
+satellite_maintain_fail_on_unhealthy: true
+
+# --- Update behaviour --------------------------------------------------------
+# Passed to `satellite-maintain update run`. Add "--whitelist-scenario=..."
+# entries here if you need to skip a specific update scenario check.
+satellite_maintain_update_extra_args: ""
+
+# --- Reboot behaviour ---------------------------------------------------------
+satellite_reboot_when_required: true
+satellite_reboot_timeout: 900          # seconds to wait for host to come back
+satellite_reboot_reconnect_delay: 20   # seconds before first reconnect attempt
+satellite_reboot_connect_timeout: 20   # per-attempt ssh connect timeout
+
+# --- Optional offline backup before patching ----------------------------------
+# Off by default: offline backups are slow and require enough free disk space.
+# Set to true (and set satellite_backup_dir) to take one automatically before
+# the update runs.
+satellite_take_backup: false
+satellite_backup_dir: /var/satellite-backup

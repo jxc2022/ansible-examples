@@ -1,0 +1,196 @@
+---
+# Patch a RHEL Satellite server and its Capsules using satellite-maintain,
+# which is the Red Hat-supported tool for combined OS + product package
+# updates. Satellite is always patched first (play 1); the play only
+# proceeds to Capsules if Satellite finishes healthy. Capsules are then
+# patched one at a time (serial: 1) and the rollout stops on first failure
+# (max_fail_percentage: 0) so a bad capsule doesn't take the rest with it.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini site.yml
+#   ansible-playbook -i inventory.ini site.yml --limit capsules   # capsules only
+#   ansible-playbook -i inventory.ini site.yml -e satellite_take_backup=true
+
+- name: Patch RHEL Satellite server
+  hosts: satellite
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Verify satellite-maintain is installed
+      command: rpm -q satellite-maintain
+      changed_when: false
+
+    - name: Pre-update health check
+      command: >
+        satellite-maintain health check --assumeyes
+        {{ ('--whitelist=' + (satellite_maintain_health_whitelist | join(','))) if satellite_maintain_health_whitelist else '' }}
+      register: sat_health_pre
+      changed_when: false
+      failed_when: satellite_maintain_fail_on_unhealthy and sat_health_pre.rc != 0
+
+    - name: Show pre-update health check output
+      debug:
+        var: sat_health_pre.stdout_lines
+
+  tasks:
+    - name: Take an offline backup before patching (optional, off by default)
+      command: satellite-maintain backup offline {{ satellite_backup_dir }} --assumeyes --skip-pulp-content
+      when: satellite_take_backup | bool
+      changed_when: true
+
+    - name: Enable maintenance mode (serve 503 during the update)
+      command: satellite-maintain maintenance-mode on
+      changed_when: true
+
+    - name: Update Satellite, always clearing maintenance mode afterwards
+      block:
+        - name: Run satellite-maintain update
+          command: satellite-maintain update run --assumeyes {{ satellite_maintain_update_extra_args }}
+          register: sat_update
+          changed_when: true
+
+        - name: Show update output
+          debug:
+            var: sat_update.stdout_lines
+      always:
+        - name: Disable maintenance mode
+          command: satellite-maintain maintenance-mode off
+          changed_when: true
+
+    - name: Check whether a reboot is required
+      command: needs-restarting -r
+      register: sat_reboot_required
+      changed_when: false
+      failed_when: false     # rc 1 legitimately means "reboot needed", not an error
+
+    - name: Reboot Satellite if required
+      reboot:
+        reboot_timeout: "{{ satellite_reboot_timeout }}"
+        connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+        pre_reboot_delay: 5
+        post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+        test_command: satellite-maintain service status --brief
+      when:
+        - satellite_reboot_when_required | bool
+        - sat_reboot_required.rc == 1
+
+  post_tasks:
+    - name: Verify all Satellite services are running
+      command: satellite-maintain service status
+      register: sat_service_status
+      changed_when: false
+      failed_when: sat_service_status.rc != 0
+
+    - name: Post-update health check
+      command: >
+        satellite-maintain health check --assumeyes
+        {{ ('--whitelist=' + (satellite_maintain_health_whitelist | join(','))) if satellite_maintain_health_whitelist else '' }}
+      register: sat_health_post
+      changed_when: false
+      failed_when: sat_health_post.rc != 0
+
+    - name: Show post-update health check output
+      debug:
+        var: sat_health_post.stdout_lines
+
+- name: Patch RHEL Capsules one at a time
+  hosts: capsules
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  any_errors_fatal: true
+
+  vars:
+    # Best-effort guard against patching a capsule mid-sync. Off by default
+    # because it needs hammer credentials against the Satellite server;
+    # flip on with -e capsule_check_sync_status=true -e hammer_username=...
+    # -e hammer_password=... (or supply via a vault-encrypted var file).
+    capsule_check_sync_status: false
+    hammer_username: ""
+    hammer_password: ""
+
+  pre_tasks:
+    - name: Verify satellite-maintain is installed
+      command: rpm -q satellite-maintain
+      changed_when: false
+
+    - name: "(Optional) Check for active content sync tasks on this capsule"
+      when: capsule_check_sync_status | bool
+      delegate_to: "{{ groups['satellite'][0] }}"
+      command: >
+        hammer --username {{ hammer_username }} --password {{ hammer_password }}
+        task list --search "state=running and (label=Actions::Katello::CapsuleContent::Sync
+        or label=Actions::Katello::CapsuleContent::UpdateContentCounts)"
+      register: capsule_sync_tasks
+      changed_when: false
+      no_log: true
+
+    - name: "(Optional) Fail if this capsule has an active sync task"
+      when:
+        - capsule_check_sync_status | bool
+        - inventory_hostname in capsule_sync_tasks.stdout
+      fail:
+        msg: >-
+          {{ inventory_hostname }} appears to have an active content sync task.
+          Re-run once it completes, or investigate before patching.
+
+    - name: Pre-update health check
+      command: >
+        satellite-maintain health check --assumeyes
+        {{ ('--whitelist=' + (satellite_maintain_health_whitelist | join(','))) if satellite_maintain_health_whitelist else '' }}
+      register: cap_health_pre
+      changed_when: false
+      failed_when: satellite_maintain_fail_on_unhealthy and cap_health_pre.rc != 0
+
+    - name: Show pre-update health check output
+      debug:
+        var: cap_health_pre.stdout_lines
+
+  tasks:
+    - name: Run satellite-maintain update
+      command: satellite-maintain update run --assumeyes {{ satellite_maintain_update_extra_args }}
+      register: cap_update
+      changed_when: true
+
+    - name: Show update output
+      debug:
+        var: cap_update.stdout_lines
+
+    - name: Check whether a reboot is required
+      command: needs-restarting -r
+      register: cap_reboot_required
+      changed_when: false
+      failed_when: false
+
+    - name: Reboot Capsule if required
+      reboot:
+        reboot_timeout: "{{ satellite_reboot_timeout }}"
+        connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+        pre_reboot_delay: 5
+        post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+        test_command: satellite-maintain service status --brief
+      when:
+        - satellite_reboot_when_required | bool
+        - cap_reboot_required.rc == 1
+
+  post_tasks:
+    - name: Verify all Capsule services are running
+      command: satellite-maintain service status
+      register: cap_service_status
+      changed_when: false
+      failed_when: cap_service_status.rc != 0
+
+    - name: Post-update health check
+      command: >
+        satellite-maintain health check --assumeyes
+        {{ ('--whitelist=' + (satellite_maintain_health_whitelist | join(','))) if satellite_maintain_health_whitelist else '' }}
+      register: cap_health_post
+      changed_when: false
+      failed_when: cap_health_post.rc != 0
+
+    - name: Show post-update health check output
+      debug:
+        var: cap_health_post.stdout_lines

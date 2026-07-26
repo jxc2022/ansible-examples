@@ -1,0 +1,48 @@
+{
+  "name": "",
+  "description": "",
+  "spec": [
+    {
+      "question_name": "Take an offline backup before patching?",
+      "question_description": "Runs satellite-maintain backup offline before the update. Slower, needs free disk space.",
+      "variable": "satellite_take_backup",
+      "type": "multiplechoice",
+      "choices": "false\ntrue",
+      "default": "false",
+      "required": true
+    },
+    {
+      "question_name": "Check capsule content sync status before patching?",
+      "question_description": "Best-effort guard via hammer on the Satellite host. Requires hammer_username/hammer_password below if enabled.",
+      "variable": "capsule_check_sync_status",
+      "type": "multiplechoice",
+      "choices": "false\ntrue",
+      "default": "false",
+      "required": true
+    },
+    {
+      "question_name": "Hammer username",
+      "question_description": "Only needed if capsule sync check is enabled. Prefer supplying this via an AAP credential/vault instead of typing it in a survey.",
+      "variable": "hammer_username",
+      "type": "text",
+      "default": "",
+      "required": false
+    },
+    {
+      "question_name": "Hammer password",
+      "question_description": "Only needed if capsule sync check is enabled. Prefer supplying this via an AAP credential/vault instead of typing it in a survey.",
+      "variable": "hammer_password",
+      "type": "password",
+      "default": "",
+      "required": false
+    },
+    {
+      "question_name": "Extra satellite-maintain update arguments",
+      "question_description": "Appended to 'satellite-maintain update run --assumeyes', e.g. --whitelist-scenario=...",
+      "variable": "satellite_maintain_update_extra_args",
+      "type": "text",
+      "default": "",
+      "required": false
+    }
+  ]
+}
