@@ -1,23 +1,4 @@
 ---
-# =============================================================================
-# Patch a RHEL Satellite and its Capsules, then email a report.
-# Self-contained: no vars file, no templates directory.
-#
-#   Play 0  build the satellite / capsules groups from newline-delimited lists
-#   Play 1  patch the Satellite   (serial: 1, stops the run on failure)
-#   Play 2  patch the Capsules    (serial: 1, gated on a healthy Satellite)
-#   Play 3  render + email the report, then fail the run if anything broke
-#
-# Run:  ansible-playbook -i localhost, satellite_patch.yml
-#       ansible-playbook -i localhost, satellite_patch.yml -e satellite_take_backup=true
-#
-# The shared settings live in the &patch_vars anchor on Play 0 and are pulled
-# into every later play with `<<: *patch_vars`. Play-level vars do NOT carry
-# across plays on their own -- that was a real bug in the original, where the
-# Capsule play referenced satellite_reboot_timeout and friends that only
-# existed in the Satellite play's vars block.
-# =============================================================================
-
 - name: Build dynamic inventory from the server lists
   hosts: localhost
   connection: local
@@ -31,7 +12,7 @@
       192.168.1.60
 
     capsule_list: |
-      # capsule1.example.com
+       192.168.1.60
       # capsule2.example.com
 
     # --- Backup --------------------------------------------------------------
@@ -65,13 +46,7 @@
     recipient: "jorge.x.chavez@gmail.com"
 
     gmail_user: "jorge.x.chavez@gmail.com"
-
-    # Gmail app password. Deliberately NOT hardcoded -- this file will end up in
-    # git and in AAP job output. Supply it one of these ways:
-    #   export GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'   (picked up below)
-    #   ansible-playbook ... -e @gmail_secret.yml --ask-vault-pass
-    #   AAP: a custom credential type that injects GMAIL_APP_PASSWORD
-    gmail_password: "{{ lookup('ansible.builtin.env', 'GMAIL_APP_PASSWORD') }}"
+    gmail_password: "nnmk dzsm ylgf tsur"
 
     report_email_enabled: true
     report_email_smtp_host: "smtp.gmail.com"
