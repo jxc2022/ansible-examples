@@ -1,0 +1,90 @@
+# RHEL Kernel Rollback Runbook
+
+Procedure for testing and rolling back to an older kernel on a RHEL 9/10 system (GRUB2 + BLS + grubby), used on the Satellite server.
+
+## Background
+
+- `grubby --info=ALL` lists installed kernels and their index/id.
+- `grub2-reboot` sets a **one-time** override (`next_entry` in `/boot/grub2/grubenv`) — used for the next boot only, then auto-clears back to the normal default. Safe way to test a kernel.
+- `grubby --set-default` writes the **persistent** default (`saved_entry` in `grubenv`) — stays until changed again.
+- Switching kernels only changes the running kernel (`uname -r`). It does **not** change `/etc/os-release` or any installed RPMs — those stay at whatever version they were.
+
+## 1. Prerequisites
+
+- Hypervisor snapshot (if virtualized) or confirmed out-of-band console access (iDRAC/iLO/IPMI) if physical.
+- Maintenance window, since this is a production Satellite server.
+
+## 2. Identify available kernels
+
+```bash
+sudo grubby --info=ALL
+```
+
+Note the `index`, `kernel` path, and `title` for the kernel you want to test.
+
+## 3. Back up current boot config
+
+```bash
+sudo cp /boot/grub2/grubenv /root/grubenv.bak
+sudo cp -r /boot/loader/entries /root/loader-entries.bak
+```
+
+## 4. Record current state
+
+```bash
+uname -r
+sudo grubby --default-kernel
+sudo grub2-editenv list
+```
+
+## 5. One-time test boot (safe, auto-reverts)
+
+```bash
+sudo grub2-reboot "<exact title from grubby --info=ALL>"
+sudo grub2-editenv list        # confirm next_entry is set
+sudo reboot
+```
+
+After reboot:
+
+```bash
+uname -r                              # confirm the test kernel is running
+sudo satellite-maintain health check  # confirm services are healthy
+```
+
+Since only `next_entry` was set (not `saved_entry`), rebooting again with no further action returns you to the original default automatically.
+
+## 6. Make the change permanent (only after successful test)
+
+```bash
+sudo grubby --set-default /boot/vmlinuz-<version>
+sudo grubby --default-kernel     # confirm it took
+sudo reboot
+uname -r                         # confirm
+```
+
+## 7. Revert back to the original kernel
+
+```bash
+sudo grubby --set-default /boot/vmlinuz-<original-version>
+sudo grub2-editenv list          # confirm saved_entry points back to original
+sudo reboot
+uname -r                         # confirm reverted
+```
+
+## Quick command reference
+
+| Task | Command |
+|---|---|
+| List all kernels/indexes/ids | `sudo grubby --info=ALL` |
+| Show current default | `sudo grubby --default-kernel` |
+| Show saved/next boot entries | `sudo grub2-editenv list` |
+| One-time test boot (by index) | `sudo grub2-reboot <index>` |
+| One-time test boot (by title) | `sudo grub2-reboot "<title>"` |
+| Set persistent default | `sudo grubby --set-default /boot/vmlinuz-<version>` |
+
+## Notes specific to this run (satellite server)
+
+- Kernels available: 9.8 (`5.14.0-687.26.1.el9_8.x86_64`, index 0), 9.3 (`5.14.0-362.8.1.el9_3.x86_64`, index 1), rescue (index 2).
+- `grubby` has no one-time-boot flag — only `grub2-reboot` supports that, via the separate `next_entry` grubenv variable.
+- `/etc/os-release` stayed at 9.8 throughout, since kernel switching doesn't touch installed packages — expected behavior, not an error.

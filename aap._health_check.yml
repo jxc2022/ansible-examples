@@ -58,6 +58,11 @@
       register: podman_output
       ignore_errors: yes
 
+    - name: sleep
+      become_user: aap
+      command: sleep 60
+      # register: podman_output
+      # ignore_errors: yes
     # -----------------------------------------------------
     # PERFORMANCE / SLOWNESS CHECKS
     # -----------------------------------------------------
