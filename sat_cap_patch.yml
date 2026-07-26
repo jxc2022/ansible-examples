@@ -63,7 +63,7 @@
     # --- Report --------------------------------------------------------------
     report_local_dir: "/tmp/reports"
     recipient: "jorge.x.chavez@gmail.com"
-    gmail_password:   "nnmk dzsm ylgf tsur"
+    gmail_password: "nnmk dzsm ylgf tsur"
     gmail_user: "jorge.x.chavez@gmail.com"
 
     # Gmail app password. Deliberately NOT hardcoded -- this file will end up in
