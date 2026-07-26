@@ -1,4 +1,23 @@
 ---
+# =============================================================================
+# Patch a RHEL Satellite and its Capsules, then email a report.
+# Self-contained: no vars file, no templates directory.
+#
+#   Play 0  build the satellite / capsules groups from newline-delimited lists
+#   Play 1  patch the Satellite   (serial: 1, stops the run on failure)
+#   Play 2  patch the Capsules    (serial: 1, gated on a healthy Satellite)
+#   Play 3  render + email the report, then fail the run if anything broke
+#
+# Run:  ansible-playbook -i localhost, satellite_patch.yml
+#       ansible-playbook -i localhost, satellite_patch.yml -e satellite_take_backup=true
+#
+# The shared settings live in the &patch_vars anchor on Play 0 and are pulled
+# into every later play with `<<: *patch_vars`. Play-level vars do NOT carry
+# across plays on their own -- that was a real bug in the original, where the
+# Capsule play referenced satellite_reboot_timeout and friends that only
+# existed in the Satellite play's vars block.
+# =============================================================================
+
 - name: Build dynamic inventory from the server lists
   hosts: localhost
   connection: local
@@ -9,10 +28,10 @@
     # --- Target hosts --------------------------------------------------------
     # Newline-delimited. Blank lines and lines starting with # are ignored.
     satellite_list: |
-      192.168.1.56
+      192.168.1.60
 
     capsule_list: |
-      # 192.168.1.60
+      # capsule1.example.com
       # capsule2.example.com
 
     # --- Backup --------------------------------------------------------------
@@ -46,7 +65,13 @@
     recipient: "jorge.x.chavez@gmail.com"
 
     gmail_user: "jorge.x.chavez@gmail.com"
-    gmail_password: "nnmk dzsm ylgf tsur"
+
+    # Gmail app password. Deliberately NOT hardcoded -- this file will end up in
+    # git and in AAP job output. Supply it one of these ways:
+    #   export GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'   (picked up below)
+    #   ansible-playbook ... -e @gmail_secret.yml --ask-vault-pass
+    #   AAP: a custom credential type that injects GMAIL_APP_PASSWORD
+    gmail_password: "{{ lookup('ansible.builtin.env', 'GMAIL_APP_PASSWORD') }}"
 
     report_email_enabled: true
     report_email_smtp_host: "smtp.gmail.com"
@@ -157,8 +182,9 @@
           when: satellite_take_backup | bool
           changed_when: true
 
+        # Subcommands are start/stop/status/is-enabled -- NOT on/off.
         - name: Enable maintenance mode (serve 503 during the update)
-          ansible.builtin.command: satellite-maintain maintenance-mode on
+          ansible.builtin.command: satellite-maintain maintenance-mode start
           changed_when: true
 
         - name: Update Satellite, always clearing maintenance mode afterwards
@@ -175,8 +201,15 @@
                 var: sat_update.stdout_lines
           always:
             - name: Disable maintenance mode
-              ansible.builtin.command: satellite-maintain maintenance-mode off
+              ansible.builtin.command: satellite-maintain maintenance-mode stop
               changed_when: true
+
+            - name: Confirm maintenance mode is actually off
+              ansible.builtin.command: satellite-maintain maintenance-mode is-enabled
+              register: sat_mm_state
+              changed_when: false
+              # is-enabled returns 0 when ON, 1 when OFF
+              failed_when: sat_mm_state.rc == 0
 
         - name: Check whether a reboot is required
           ansible.builtin.command: needs-restarting -r
