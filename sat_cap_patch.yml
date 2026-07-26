@@ -1,0 +1,247 @@
+---
+- name: Patch RHEL Satellite server
+  hosts: all
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    satellite_backup_dir: "/var/opt/satellite/backups"
+    satellite_take_backup: false
+    satellite_maintain_update_extra_args: ""
+    satellite_reboot_when_required: true
+    satellite_reboot_timeout: 600
+    satellite_reboot_connect_timeout: 5
+    satellite_reboot_reconnect_delay: 30
+    satellite_maintain_fail_on_unhealthy: true
+
+  pre_tasks:
+    - name: Verify satellite-maintain is installed
+      command: rpm -q satellite-maintain
+      changed_when: false
+
+    - name: Pre-update health check
+      command: satellite-maintain health check --assumeyes
+      register: sat_health_pre
+      changed_when: false
+      failed_when: satellite_maintain_fail_on_unhealthy and sat_health_pre.rc != 0
+
+    - name: Show pre-update health check output
+      debug:
+        var: sat_health_pre.stdout_lines
+
+  tasks:
+    - name: Take an offline backup before patching (optional, off by default)
+      command: satellite-maintain backup offline {{ satellite_backup_dir }} --assumeyes --skip-pulp-content
+      when: satellite_take_backup | bool
+      changed_when: true
+
+    - name: Enable maintenance mode (serve 503 during the update)
+      command: satellite-maintain maintenance-mode on
+      changed_when: true
+
+    - name: Update Satellite, always clearing maintenance mode afterwards
+      block:
+        - name: Run satellite-maintain update
+          command: satellite-maintain update run --assumeyes {{ satellite_maintain_update_extra_args }}
+          register: sat_update
+          changed_when: true
+
+        - name: Show update output
+          debug:
+            var: sat_update.stdout_lines
+      always:
+        - name: Disable maintenance mode
+          command: satellite-maintain maintenance-mode off
+          changed_when: true
+
+    - name: Check whether a reboot is required
+      command: needs-restarting -r
+      register: sat_reboot_required
+      changed_when: false
+      failed_when: false     # rc 1 legitimately means "reboot needed", not an error
+
+    - name: Reboot Satellite if required
+      reboot:
+        reboot_timeout: "{{ satellite_reboot_timeout }}"
+        connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+        pre_reboot_delay: 5
+        post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+        test_command: satellite-maintain service status --brief
+      when:
+        - satellite_reboot_when_required | bool
+        - sat_reboot_required.rc == 1
+
+  post_tasks:
+    - name: Verify all Satellite services are running
+      command: satellite-maintain service status
+      register: sat_service_status
+      changed_when: false
+      failed_when: sat_service_status.rc != 0
+
+    - name: Post-update health check
+      command: satellite-maintain health check --assumeyes
+      register: sat_health_post
+      changed_when: false
+      failed_when: sat_health_post.rc != 0
+
+    - name: Show post-update health check output
+      debug:
+        var: sat_health_post.stdout_lines
+
+    - name: Record per-host result for the emailed report
+      set_fact:
+        patch_report_role: satellite
+        patch_report_pre_health_rc: "{{ sat_health_pre.rc }}"
+        patch_report_update_rc: "{{ sat_update.rc }}"
+        patch_report_reboot_performed: "{{ sat_reboot_required.rc == 1 }}"
+        patch_report_post_health_rc: "{{ sat_health_post.rc }}"
+        patch_report_service_status_rc: "{{ sat_service_status.rc }}"
+
+    - name: Record whether Satellite finished healthy, for the Capsule play to check
+      set_fact:
+        satellite_patch_ok: "{{ sat_service_status.rc == 0 and sat_health_post.rc == 0 }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Patch RHEL Capsules one at a time
+  hosts: all
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+
+  vars:
+    # Best-effort guard against patching a capsule mid-sync. Off by default
+    # because it needs hammer credentials against the Satellite server;
+    # flip on with -e capsule_check_sync_status=true -e hammer_username=...
+    # -e hammer_password=... (or supply via a vault-encrypted var file).
+    capsule_check_sync_status: false
+    hammer_username: ""
+    hammer_password: ""
+
+  pre_tasks:
+    - name: Refuse to patch capsules if the Satellite play did not finish healthy
+      # Skips this check when the run was deliberately limited to capsules
+      # only (e.g. `--limit capsules`, or an AAP Job Template Limit field),
+      # since in that case Satellite was never targeted this run at all.
+      meta: end_play
+      when: >-
+        (ansible_limit is not defined or 'satellite' in ansible_limit)
+        and not (hostvars['localhost'].satellite_patch_ok | default(false))
+
+    - name: Verify satellite-maintain is installed
+      command: rpm -q satellite-maintain
+      changed_when: false
+
+    - name: "(Optional) Check for active content sync tasks on this capsule"
+      when: capsule_check_sync_status | bool
+      delegate_to: "{{ groups['satellite'][0] }}"
+      command: >
+        hammer --username {{ hammer_username }} --password {{ hammer_password }}
+        task list --search "state=running and (label=Actions::Katello::CapsuleContent::Sync
+        or label=Actions::Katello::CapsuleContent::UpdateContentCounts)"
+      register: capsule_sync_tasks
+      changed_when: false
+      no_log: true
+
+    - name: "(Optional) Fail if this capsule has an active sync task"
+      when:
+        - capsule_check_sync_status | bool
+        - inventory_hostname in capsule_sync_tasks.stdout
+      fail:
+        msg: >-
+          {{ inventory_hostname }} appears to have an active content sync task.
+          Re-run once it completes, or investigate before patching.
+
+    - name: Pre-update health check
+      command: satellite-maintain health check --assumeyes
+      register: cap_health_pre
+      changed_when: false
+      failed_when: satellite_maintain_fail_on_unhealthy and cap_health_pre.rc != 0
+
+    - name: Show pre-update health check output
+      debug:
+        var: cap_health_pre.stdout_lines
+
+  tasks:
+    - name: Run satellite-maintain update
+      command: satellite-maintain update run --assumeyes {{ satellite_maintain_update_extra_args }}
+      register: cap_update
+      changed_when: true
+
+    - name: Show update output
+      debug:
+        var: cap_update.stdout_lines
+
+    - name: Check whether a reboot is required
+      command: needs-restarting -r
+      register: cap_reboot_required
+      changed_when: false
+      failed_when: false
+
+    - name: Reboot Capsule if required
+      reboot:
+        reboot_timeout: "{{ satellite_reboot_timeout }}"
+        connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+        pre_reboot_delay: 5
+        post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+        test_command: satellite-maintain service status --brief
+      when:
+        - satellite_reboot_when_required | bool
+        - cap_reboot_required.rc == 1
+
+  post_tasks:
+    - name: Verify all Capsule services are running
+      command: satellite-maintain service status
+      register: cap_service_status
+      changed_when: false
+      failed_when: cap_service_status.rc != 0
+
+    - name: Post-update health check
+      command: satellite-maintain health check --assumeyes
+      register: cap_health_post
+      changed_when: false
+      failed_when: cap_health_post.rc != 0
+
+    - name: Show post-update health check output
+      debug:
+        var: cap_health_post.stdout_lines
+
+    - name: Record per-host result for the emailed report
+      set_fact:
+        patch_report_role: capsule
+        patch_report_pre_health_rc: "{{ cap_health_pre.rc }}"
+        patch_report_update_rc: "{{ cap_update.rc }}"
+        patch_report_reboot_performed: "{{ cap_reboot_required.rc == 1 }}"
+        patch_report_post_health_rc: "{{ cap_health_post.rc }}"
+        patch_report_service_status_rc: "{{ cap_service_status.rc }}"
+
+- name: Email the patch run report
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+
+  vars:
+    report_path: "/tmp/satellite_patch_report_{{ ansible_date_time.iso8601_basic_short }}.txt"
+
+  tasks:
+    - name: Render patch report
+      template:
+        src: templates/patch_report.j2
+        dest: "{{ report_path }}"
+        mode: "0644"
+      when: report_email_enabled | bool
+
+    - name: Email patch report
+      community.general.mail:
+        host: "{{ report_email_smtp_host }}"
+        port: "{{ report_email_smtp_port }}"
+        username: "{{ report_email_smtp_username | default(omit) }}"
+        password: "{{ report_email_smtp_password | default(omit) }}"
+        secure: "{{ report_email_smtp_secure }}"
+        from: "{{ report_email_from }}"
+        to: "{{ report_email_to if report_email_to is string else report_email_to | join(',') }}"
+        subject: "Satellite/Capsule patch report - {{ ansible_date_time.date }}"
+        body: "{{ lookup('file', report_path) }}"
+        attach: "{{ [report_path] if report_email_attach_report | bool else omit }}"
+      when: report_email_enabled | bool
