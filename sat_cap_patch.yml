@@ -9,7 +9,7 @@
     # --- Target hosts --------------------------------------------------------
     # Newline-delimited. Blank lines and lines starting with # are ignored.
     satellite_list: |
-      192.168.1.60
+      192.168.1.56
 
     capsule_list: |
       # 192.168.1.60
