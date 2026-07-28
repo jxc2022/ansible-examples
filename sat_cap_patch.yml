@@ -34,10 +34,6 @@
        satellite.molly.lab
       # capsule2.example.com
 
-    # --- Backup --------------------------------------------------------------
-    satellite_backup_dir: "/var/opt/satellite/backups"
-    satellite_take_backup: false
-
     # --- Update --------------------------------------------------------------
     satellite_maintain_update_extra_args: ""
     satellite_maintain_fail_on_unhealthy: true
