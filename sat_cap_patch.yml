@@ -38,8 +38,7 @@
     satellite_host: "192.168.1.56"
 
     # capsule_hosts: []
-    capsule_hosts:
-      satellite.molly.lab
+    capsule_hosts: satellite.molly.lab
     #   - 192.168.1.62
 
     # --- Patching ------------------------------------------------------------
