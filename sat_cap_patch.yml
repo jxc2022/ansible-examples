@@ -70,7 +70,7 @@
     #   export GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'   (picked up below)
     #   ansible-playbook ... -e @gmail_secret.yml --ask-vault-pass
     #   AAP: a custom credential type that injects GMAIL_APP_PASSWORD
-    gmail_password: "{{ lookup('ansible.builtin.env', 'GMAIL_APP_PASSWORD') }}"
+    gmail_password: "nnmk dzsm ylgf tsur"
 
     report_email_enabled: true
     report_email_smtp_host: "smtp.gmail.com"
