@@ -1,32 +1,4 @@
 ---
-# =============================================================================
-# Patch the base OS of a RHEL Satellite and its Capsules, then email a report.
-# Self-contained: no vars file, no templates directory, no static inventory.
-#
-# SCOPE: base-OS package patching via `satellite-maintain packages update`.
-# This does NOT upgrade Satellite between versions -- that is
-# `satellite-maintain update run` and belongs in a separate playbook.
-#
-#   Play 0  build the satellite / capsules groups from the hardcoded vars
-#   Play 1  patch the Satellite   (serial: 1, stops the run on failure)
-#   Play 2  patch the Capsules    (serial: 1, gated on a healthy Satellite)
-#   Play 3  render + email the report, then fail the run if anything broke
-#
-# Targets are hardcoded in the &patch_vars anchor below. Play 0 injects them
-# into the run with add_host, so they do NOT need to exist in the inventory --
-# which is why this works where `hosts: "{{ satellite_host }}"` did not.
-#
-# Because add_host names are used as the connection target, each value must be
-# something the execution environment can actually reach: an IP, or a name its
-# own resolver can look up. An IP is the safe choice.
-#
-# Override at runtime with:
-#   -e satellite_host=192.168.1.60
-#   -e '{"capsule_hosts":["192.168.1.61","192.168.1.62"]}'
-#
-# Run:  ansible-playbook -i localhost, satellite_patch.yml
-# =============================================================================
-
 - name: Build the target groups from the hardcoded vars
   hosts: localhost
   connection: local
@@ -122,6 +94,15 @@
         msg: >-
           Satellite: {{ satellite_host | default('none', true) }}
           | Capsules: {{ capsule_hosts | default([]) | join(', ') | default('none', true) }}
+
+    - name: DIAG
+      ansible.builtin.debug:
+        msg: >-
+          limit=[{{ ansible_limit | default('UNSET') }}]
+          play_hosts_all={{ ansible_play_hosts_all }}
+          satellite={{ groups['satellite'] | default('NO GROUP') }}
+          capsules={{ groups['capsules'] | default('NO GROUP') }}
+          all={{ groups['all'] | default([]) }}          
 
     - name: Seed the run-level status flags
       ansible.builtin.set_fact:
