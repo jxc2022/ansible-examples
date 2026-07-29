@@ -31,10 +31,10 @@
     # --- Targets -------------------------------------------------------------
     satellite_host: "satellite.molly.lab"
 
-    capsule_hosts: []
-    # capsule_hosts:
-    #   - capsule1.molly.lab
-    #   - capsule2.molly.lab
+    # capsule_hosts: []
+    capsule_hosts:
+      - satellite.molly.lab
+      #- capsule2.molly.lab
 
     # --- Patching ------------------------------------------------------------
     # Note: `packages update` still runs satellite-installer afterwards, which
