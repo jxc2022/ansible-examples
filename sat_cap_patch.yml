@@ -21,7 +21,7 @@
 # =============================================================================
 
 - name: Patch the RHEL Satellite server
-  hosts: "{{ satellite_host }}"
+  hosts: localhost
   become: true
   serial: 1
   max_fail_percentage: 0
