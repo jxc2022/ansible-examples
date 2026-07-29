@@ -1,6 +1,24 @@
 ---
+# =============================================================================
 # Patch the base OS of a RHEL Satellite and its Capsules, then email a report.
-
+# Self-contained: no vars file, no templates directory, no inventory play.
+#
+# SCOPE: base-OS package patching via `satellite-maintain packages update`.
+# This does NOT upgrade Satellite between versions -- that is
+# `satellite-maintain update run` and belongs in a separate playbook.
+#
+#   Play 1  patch the Satellite   (serial: 1, stops the run on failure)
+#   Play 2  patch the Capsules    (serial: 1, gated on a healthy Satellite)
+#   Play 3  render + email the report, then fail the run if anything broke
+#
+# Targets are hardcoded in the &patch_vars anchor below and referenced from
+# each play's `hosts:` line. They must exist in the inventory you run against
+# (the AAP inventory, or a static file). Override at runtime with:
+#   -e satellite_host=other.example.com
+#   -e '{"capsule_hosts":["cap1.example.com"]}'
+#
+# Run:  ansible-playbook -i inventory satellite_patch.yml
+# =============================================================================
 
 - name: Patch the RHEL Satellite server
   hosts: "{{ satellite_host }}"
