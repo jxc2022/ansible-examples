@@ -1,40 +1,46 @@
 ---
 # =============================================================================
 # Patch the base OS of a RHEL Satellite and its Capsules, then email a report.
-# Self-contained: no vars file, no templates directory, no inventory play.
+# Self-contained: no vars file, no templates directory, no static inventory.
 #
 # SCOPE: base-OS package patching via `satellite-maintain packages update`.
 # This does NOT upgrade Satellite between versions -- that is
 # `satellite-maintain update run` and belongs in a separate playbook.
 #
+#   Play 0  build the satellite / capsules groups from the hardcoded vars
 #   Play 1  patch the Satellite   (serial: 1, stops the run on failure)
 #   Play 2  patch the Capsules    (serial: 1, gated on a healthy Satellite)
 #   Play 3  render + email the report, then fail the run if anything broke
 #
-# Targets are hardcoded in the &patch_vars anchor below and referenced from
-# each play's `hosts:` line. They must exist in the inventory you run against
-# (the AAP inventory, or a static file). Override at runtime with:
-#   -e satellite_host=other.example.com
-#   -e '{"capsule_hosts":["cap1.example.com"]}'
+# Targets are hardcoded in the &patch_vars anchor below. Play 0 injects them
+# into the run with add_host, so they do NOT need to exist in the inventory --
+# which is why this works where `hosts: "{{ satellite_host }}"` did not.
 #
-# Run:  ansible-playbook -i inventory satellite_patch.yml
+# Because add_host names are used as the connection target, each value must be
+# something the execution environment can actually reach: an IP, or a name its
+# own resolver can look up. An IP is the safe choice.
+#
+# Override at runtime with:
+#   -e satellite_host=192.168.1.60
+#   -e '{"capsule_hosts":["192.168.1.61","192.168.1.62"]}'
+#
+# Run:  ansible-playbook -i localhost, satellite_patch.yml
 # =============================================================================
 
-- name: Patch the RHEL Satellite server
+- name: Build the target groups from the hardcoded vars
   hosts: localhost
-  become: true
-  serial: 1
-  max_fail_percentage: 0
+  connection: local
+  gather_facts: false
 
   vars: &patch_vars
 
     # --- Targets -------------------------------------------------------------
-    satellite_host: "satellite.molly.lab"
+    satellite_host: "192.168.1.56"
 
     # capsule_hosts: []
     capsule_hosts:
-      - satellite.molly.lab
-      #- capsule2.molly.lab
+      satellite.molly.lab
+    #   - 192.168.1.62
 
     # --- Patching ------------------------------------------------------------
     # Note: `packages update` still runs satellite-installer afterwards, which
@@ -81,6 +87,57 @@
     report_email_from: "{{ gmail_user }}"
     report_email_to: "{{ recipient }}"
     report_email_attach_report: true
+
+  tasks:
+    - name: Sanity-check the targets
+      ansible.builtin.assert:
+        that:
+          - satellite_host | default('', true) | length > 0
+            or capsule_hosts | default([]) | length > 0
+          - satellite_host not in capsule_hosts | default([])
+        fail_msg: >-
+          Bad targets. Need at least one host, and the Satellite must not also
+          be listed as a Capsule.
+          satellite={{ satellite_host }} capsules={{ capsule_hosts }}
+        quiet: true
+
+    - name: Add the Satellite to the satellite group
+      ansible.builtin.add_host:
+        name: "{{ satellite_host }}"
+        groups:
+          - satellite
+      when: satellite_host | default('', true) | length > 0
+      changed_when: false
+
+    - name: Add the Capsules to the capsules group
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups:
+          - capsules
+      loop: "{{ capsule_hosts | default([]) }}"
+      changed_when: false
+
+    - name: Show what will be patched
+      ansible.builtin.debug:
+        msg: >-
+          Satellite: {{ satellite_host | default('none', true) }}
+          | Capsules: {{ capsule_hosts | default([]) | join(', ') | default('none', true) }}
+
+    - name: Seed the run-level status flags
+      ansible.builtin.set_fact:
+        satellite_play_ran: false
+        satellite_patch_ok: false
+        patch_run_failed: false
+
+
+# =============================================================================
+- name: Patch the RHEL Satellite server
+  hosts: satellite
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    <<: *patch_vars
 
   tasks:
     - name: Patch the Satellite
@@ -204,7 +261,7 @@
 
 # =============================================================================
 - name: Patch RHEL Capsules one at a time
-  hosts: "{{ capsule_hosts }}"
+  hosts: capsules
   become: true
   serial: 1
   max_fail_percentage: 0
@@ -238,10 +295,10 @@
           register: capsule_sync_tasks
           changed_when: false
           no_log: true
-          delegate_to: "{{ satellite_host }}"
+          delegate_to: "{{ groups['satellite'] | first }}"
           when:
             - capsule_check_sync_status | bool
-            - satellite_host | default('', true) | length > 0
+            - groups['satellite'] | default([]) | length > 0
 
         - name: Fail if this Capsule has an active sync task
           ansible.builtin.fail:
@@ -344,9 +401,7 @@
   vars:
     <<: *patch_vars
     report_path: "{{ report_local_dir }}/satellite_patch_report_{{ ansible_date_time.iso8601_basic_short }}.txt"
-    report_targets: >-
-      {{ ([satellite_host] if satellite_host | default('', true) | length > 0 else [])
-         + (capsule_hosts | default([])) }}
+    report_targets: "{{ (groups['satellite'] | default([])) + (groups['capsules'] | default([])) }}"
 
   tasks:
     - name: Ensure the local report directory exists
