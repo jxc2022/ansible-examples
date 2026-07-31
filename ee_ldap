@@ -1,0 +1,58 @@
+---
+# ansible-builder v3 execution environment - python-ldap, fully self-contained.
+# No requirements.yml / requirements.txt / bindep.txt needed.
+#
+#   podman login registry.redhat.io
+#   ansible-builder build -t ldap-ee:1.0 -v3
+#
+version: 3
+
+images:
+  base_image:
+    # AAP 2.5 supported minimal EE (ships ansible-core 2.16).
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+    #
+    # Alternatives - swap the line above:
+    #   registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest
+    #   quay.io/ansible/ansible-runner:latest          (community, no subscription)
+
+dependencies:
+
+  galaxy:
+    collections:
+      # ldap_entry, ldap_attrs, ldap_search, ldap_passwd, ldap_inc
+      - name: community.general
+      # - name: microsoft.ad        # uncomment for Active Directory
+
+  python:
+    - python-ldap>=3.4.4
+
+  system:
+    # bindep format. python-ldap has no manylinux wheels, so pip compiles the
+    # _ldap C extension from source - headers and a compiler must be present.
+    # [compile] entries live in the builder stage only and are not in the
+    # final image.
+    - gcc [compile platform:rpm]
+    - make [compile platform:rpm]
+    - python3-devel [compile platform:rpm]
+    - openldap-devel [compile platform:rpm]
+    - cyrus-sasl-devel [compile platform:rpm]
+    - openssl-devel [compile platform:rpm]
+    # Runtime shared libraries the compiled extension links against.
+    - openldap [platform:rpm]
+    - cyrus-sasl-lib [platform:rpm]
+    # Optional: ldapsearch / ldapwhoami for debugging binds and TLS from
+    # inside the EE. Remove for a smaller image.
+    - openldap-clients [platform:rpm]
+
+options:
+  # ee-minimal-rhel9 is built on ubi9-minimal, which ships microdnf, not dnf.
+  # Remove this line if you switch to a full-ubi or community base image.
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    # Fail the build loudly if the C extension didn't compile or link,
+    # rather than discovering it mid-playbook.
+    - RUN python3 -c "import ldap; print('python-ldap OK:', ldap.__version__)"
+    - LABEL org.opencontainers.image.description="Ansible EE with python-ldap and community.general LDAP modules"
