@@ -56,3 +56,24 @@ additional_build_steps:
     # rather than discovering it mid-playbook.
     - RUN python3 -c "import ldap; print('python-ldap OK:', ldap.__version__)"
     - LABEL org.opencontainers.image.description="Ansible EE with python-ldap and community.general LDAP modules"
+
+
+
+
+
+
+
+
+ime="2026-08-03T11:54:54-07:00" level=warning msg="Failed to mount subscriptions, skipping entry in /usr/share/containers/mounts.conf: getting host subscription data: failed to read subscriptions from \"/usr/share/rhel/secrets\": open /usr/share/rhel/secrets/redhat.repo: permission denied"
+[WARNING]: Skipping Galaxy server https://galaxy.ansible.com. Got an unexpected
+error when getting available versions of collection community.general: Unknown
+error when attempting to call Galaxy at 'https://galaxy.ansible.com/api/':
+<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+self-signed certificate in certificate chain (_ssl.c:998)>. <urlopen error
+[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed
+certificate in certificate chain (_ssl.c:998)>
+ERROR! Unknown error when attempting to call Galaxy at 'https://galaxy.ansible.com/api/': <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:998)>. <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:998)>
+Starting galaxy collection install process
+Process install dependency map
+Error: building at STEP "RUN ANSIBLE_GALAXY_DISABLE_GPG_VERIFY=1 ansible-galaxy collection install $ANSIBLE_GALAXY_CLI_COLLECTION_OPTS -r requirements.yml --collections-path "/usr/share/ansible/collections"": while running runtime: exit status 1
+
