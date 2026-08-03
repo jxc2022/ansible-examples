@@ -77,3 +77,56 @@ Starting galaxy collection install process
 Process install dependency map
 Error: building at STEP "RUN ANSIBLE_GALAXY_DISABLE_GPG_VERIFY=1 ansible-galaxy collection install $ANSIBLE_GALAXY_CLI_COLLECTION_OPTS -r requirements.yml --collections-path "/usr/share/ansible/collections"": while running runtime: exit status 1
 
+
+
+dependencies:
+
+  galaxy:
+    collections:
+      # ldap_entry, ldap_attrs, ldap_search, ldap_passwd, ldap_inc
+      - name: community.general
+      # - name: microsoft.ad        # uncomment for Active Directory
+
+  python:
+    - python-ldap>=3.4.4
+
+  system:
+    # bindep format. python-ldap has no manylinux wheels, so pip compiles the
+    # _ldap C extension from source - headers and a compiler must be present.
+    # [compile] entries live in the builder stage only and are not in the
+    # final image.
+    - gcc [compile platform:rpm]
+    - make [compile platform:rpm]
+    - python3-devel [compile platform:rpm]
+    - openldap-devel [compile platform:rpm]
+    - cyrus-sasl-devel [compile platform:rpm]
+    - openssl-devel [compile platform:rpm]
+    # Runtime shared libraries the compiled extension links against.
+    - openldap [platform:rpm]
+    - cyrus-sasl-lib [platform:rpm]
+    # Optional: ldapsearch / ldapwhoami for debugging binds and TLS from
+    # inside the EE. Remove for a smaller image.
+    - openldap-clients [platform:rpm]
+
+options:
+  # ee-minimal-rhel9 is built on ubi9-minimal, which ships microdnf, not dnf.
+  # Remove this line if you switch to a full-ubi or community base image.
+  package_manager_path: /usr/bin/microdnf
+
+  build_arg_defaults:
+    # TLS-inspecting proxy presents a self-signed chain the image doesn't trust,
+    # so ansible-galaxy fails cert verification. Skip verification for the
+    # collection install. Build-time only - does not affect the final image.
+    ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--ignore-certs"
+
+additional_build_steps:
+  prepend_builder:
+    # Same proxy breaks pip in the builder stage, and there is no build_arg for
+    # pip opts - python-ldap has no wheels so this download WILL happen.
+    - ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org pypi.python.org"
+
+  append_final:
+    # Fail the build loudly if the C extension didn't compile or link,
+    # rather than discovering it mid-playbook.
+    - RUN python3 -c "import ldap; print('python-ldap OK:', ldap.__version__)"
+    - LABEL org.opencontainers.image.description="Ansible EE with pytho

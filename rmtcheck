@@ -18,8 +18,7 @@
 #   - Job template: set Inventory to the host holding the server, tick
 #     "Privilege Escalation", and expose any of the vars below as survey fields.
 #   - The execution environment is ephemeral, so the report is written ON THE
-#     SERVER ITSELF (report_dir). Set fetch_report=true to also pull a copy back
-#     into the EE for a downstream artifact/notification step.
+#     SERVER ITSELF (report_dir) and overwritten on each run.
 #   - Counts are published with set_stats, so they appear under the job's
 #     Artifacts tab and can be consumed by later nodes in a workflow.
 #
@@ -30,7 +29,6 @@
 #   download_updates=true  pre-stage RPMs into the local zypper cache with
 #                          `--download-only` (still installs nothing, default: false)
 #   report_dir=/var/log/health_check    where the report is written on the server
-#   fetch_report=true      also copy the report back into the EE (default: false)
 
 - name: Health check - nginx, mariadb and pending updates
   hosts: "{{ target_hosts | default('all') }}"
@@ -49,9 +47,6 @@
     mariadb_port: 3306
     report_dir: /var/log/health_check
     report_name: service_report.html
-    report_keep_timestamped: true
-    fetch_report: false
-    fetch_dest: "{{ playbook_dir }}/reports/"
 
   tasks:
 
@@ -449,21 +444,6 @@
           </div>
           </body>
           </html>
-
-    - name: Keep a timestamped copy
-      ansible.builtin.copy:
-        src: "{{ report_dir }}/{{ report_name }}"
-        dest: "{{ report_dir }}/service_report_{{ ansible_date_time.iso8601_basic_short }}.html"
-        remote_src: true
-        mode: "0644"
-      when: report_keep_timestamped | bool
-
-    - name: Fetch the report back into the execution environment
-      ansible.builtin.fetch:
-        src: "{{ report_dir }}/{{ report_name }}"
-        dest: "{{ fetch_dest }}"
-        flat: false
-      when: fetch_report | bool
 
     - name: Report location
       ansible.builtin.debug:
