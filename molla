@@ -1,47 +1,34 @@
 ---
-# check_web_db_services.yml
-#
-# READ-ONLY health check for a SUSE Linux server (SLES / openSUSE), designed to
-# run as an Ansible Automation Platform job template:
-#   * is nginx running and enabled?
-#   * is mariadb running and enabled?
-#   * what patches / package updates are pending?
-#
-# This playbook NEVER starts, stops, restarts or reconfigures a service, and
-# NEVER installs or upgrades a package. The zypper step is a simulation
-# (`--dry-run`, i.e. the equivalent of answering "no" at the confirm prompt).
-#
-# Self-contained: the HTML report template is inlined below, so this single
-# file is the whole project - no templates/ directory needed.
-#
-# AAP notes
-#   - Job template: set Inventory to the host holding the server, tick
-#     "Privilege Escalation", and expose any of the vars below as survey fields.
-#   - The execution environment is ephemeral, so the report is written ON THE
-#     SERVER ITSELF (report_dir) and overwritten on each run. The same HTML is
-#     emailed, so the run is self-contained.
-#   - Requires the community.general collection (for community.general.mail).
-#     Put it in collections/requirements.yml, or use an EE that bundles it.
-#   - Play 2 sends the mail. It targets localhost with connection: local so it
-#     runs inside the EE - the EE therefore needs network access to the SMTP
-#     relay. Store smtp_username / smtp_password in an AAP credential or vault,
-#     do not hardcode them here.
-#
-# Extra vars / survey:
-#   fail_on_down=false     report without failing the job (default: true)
-#   check_updates=false    skip the zypper steps entirely (default: true)
-#   refresh_repos=false    use cached metadata instead of `zypper refresh` (default: true)
-#   report_dir=/var/log/health_check    where the report is written on the server
-#   send_email=false       skip the email (default: true)
-#   mail_only_on_problem=true  email only when a service is down or security
-#                          patches are pending (default: false - always email)
-#   smtp_host, smtp_port, smtp_secure, smtp_username, smtp_password
-#   mail_from, mail_to (list)
+- name: Build dynamic inventory
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    server_list: |
+       epmrmtmaw3p01.sap.mckesson.com
+  tasks:
+    - name: Convert server_list string to a list
+      set_fact:
+        servers: "{{ server_list.split('\n')
+                     | map('trim')
+                     | select('ne','')
+                     | unique
+                     | list }}"
+
+    - name: Create dynamic group linux_servers
+      add_host:
+        name: "{{ item }}"
+        groups: linux_servers
+      loop: "{{ servers }}"
+
+    - name: Show dynamically added servers
+      debug:
+        msg: "Added {{ servers }} to group linux_servers"
 
 - name: Health check - nginx, mariadb and pending updates
-  hosts: "{{ target_hosts | default('all') }}"
+  hosts: linux_servers
   gather_facts: true
-  become: true                     # zypper metadata + systemd state need root
+  become: true                    
 
   vars:
     fail_on_down: true
@@ -50,7 +37,7 @@
     refresh_repos: true
     nginx_service: nginx.service
     mariadb_service: mariadb.service
-    nginx_port: 80
+    nginx_port: 443
     mariadb_port: 3306
     report_dir: /var/log/health_check
     report_name: service_report.html
@@ -199,7 +186,10 @@
     # Report - rendered from the inline template below and written on the
     # server, since the AAP execution environment is ephemeral.
     # ---------------------------------------------------------------
-
+- name: Build and email consolidated HTML report
+  hosts: localhost
+  gather_facts: yes
+  tasks:
     - name: Ensure report directory exists
       ansible.builtin.file:
         path: "{{ report_dir }}"
@@ -386,33 +376,22 @@
       ansible.builtin.debug:
         msg: "HTML report written to {{ report_dir }}/{{ report_name }} on {{ inventory_hostname }}"
 
-# ===================================================================
-# Play 2 - email the report from the execution environment.
-#
-# This runs as its own play against localhost with connection: local, so
-# it never touches the AAP machine credential or the managed host. (With
-# delegate_to the implicit localhost inherits ansible_user / ansible_host
-# / the SSH key from the "all" group, and the mail task tries to SSH to
-# the server instead of running in the EE.)
-# ===================================================================
+
 
 - name: Email the health check report
-  hosts: localhost
-  connection: local
+  #host: "smtp.mckesson.com"
   gather_facts: false
   become: false
 
   vars:
     send_email: true
     mail_only_on_problem: false
-    smtp_host: smtp.corp.lan
     smtp_port: 25
-    smtp_secure: starttls       # never | starttls | ssl | try
-    smtp_username: ""           # leave empty for an unauthenticated relay
-    smtp_password: ""
-    mail_from: ansible-health@corp.lan
+    smtp_secure: starttls      
+    smtp_host: "smtp.mckesson.com"
+    mail_from: jorge.chavez@mckesson.com
     mail_to:
-      - linux-ops@corp.lan
+      - jorge.chavez@mckesson.com
 
   tasks:
 
@@ -440,8 +419,6 @@
         host: "{{ smtp_host }}"
         port: "{{ smtp_port }}"
         secure: "{{ smtp_secure }}"
-        username: "{{ smtp_username | default('', true) or omit }}"
-        password: "{{ smtp_password | default('', true) or omit }}"
         from: "{{ mail_from }}"
         to: "{{ mail_to }}"
         subject: >-
@@ -476,13 +453,10 @@
         - item.failed | default(false)
           or (item.msg | default('') is search('(?i)error|refused|timed out'))
 
-# ===================================================================
-# Play 3 - exit code. Runs after the email so a failing service still
-# gets reported before the job goes red.
-# ===================================================================
+
 
 - name: Evaluate service health
-  hosts: "{{ target_hosts | default('all') }}"
+  hosts: linux_servers
   gather_facts: false
   become: false
 
