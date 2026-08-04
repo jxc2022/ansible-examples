@@ -1,67 +1,87 @@
 ---
 
-- name: Build dynamic inventory
+- name: Build the Satellite and Capsule groups
   hosts: localhost
   connection: local
   gather_facts: false
 
-  vars:
-    server_list: |
-      epmsatmddcn01
-epmcapazn01
-
-  tasks:
-
-    - name: Convert server_list string to a list
-      ansible.builtin.set_fact:
-        servers: >-
-          {{ server_list.splitlines() | map('trim') | select('ne', '') | unique | list }}
-
-    - name: Fail early if no servers were supplied
-      ansible.builtin.fail:
-        msg: "server_list is empty - nothing to check."
-      when: servers | length == 0
-
-    - name: Create dynamic group linux_servers
-      ansible.builtin.add_host:
-        name: "{{ item }}"
-        groups: linux_servers
-      loop: "{{ servers }}"
-      changed_when: false
-
-    - name: Show dynamically added servers
-      ansible.builtin.debug:
-        msg: "Added {{ servers | join(', ') }} to group linux_servers"
-
-
-- name: Patch the RHEL Satellite server
-  hosts: linux_servers
-  become: true
-  serial: 1
-  max_fail_percentage: 0
-
   vars: &patch_vars
+    # --- targets -----------------------------------------------------------
+    # One Satellite, any number of Capsules. To add the other two Capsules,
+    # just uncomment / add the lines below - everything downstream (patch
+    # order, the report table, the per-host detail panels, the totals) is
+    # driven off this list, so nothing else needs changing. Capsules are
+    # patched one at a time (serial: 1) in the order listed here.
+    satellite_host: epmsatmddcn01
+    capsule_hosts:
+      - epmcapazn01
+      # - epmcapXXXXX02
+      # - epmcapXXXXX03
 
-    # --- Targets -------------------------------------------------------------
-    satellite_host: "satellite.molly.lab"
-
-    capsule_hosts: []
-    # capsule_hosts:
-    #   - capsule1.molly.lab
-    #   - capsule2.molly.lab
-
+    # --- patching behaviour ------------------------------------------------
     satellite_packages_update_extra_args: ""
     satellite_reboot_timeout: 600
     satellite_reboot_connect_timeout: 5
     satellite_reboot_reconnect_delay: 30
     capsule_require_healthy_satellite: true
-    report_local_dir: "/tmp/reports"
-    recipient: "jorge.chavez@mckesson.com"
+
+    # --- optional capsule sync pre-check (needs hammer credentials) --------
+    capsule_check_sync_status: false
+
+
+    # --- report + email ----------------------------------------------------
+    report_local_dir: /tmp/reports
     report_email_enabled: true
-    report_email_smtp_host: "smtp.gmail.com"
+    report_email_attach_report: true
+    report_email_smtp_host: smtp.mckesson.com
+    report_email_smtp_port: 25
+    report_email_smtp_secure: starttls      # never | starttls | ssl | try
+    report_email_from: jorge.chavez@mckesson.com
+    report_email_to:
+      - jorge.chavez@mckesson.com
 
   tasks:
-    - name: Patch  Satellite
+
+    - name: Fail early if no Satellite was supplied
+      ansible.builtin.fail:
+        msg: "satellite_host is empty - nothing to patch."
+      when: satellite_host | default('', true) | length == 0
+
+    - name: Add the Satellite to group sat_servers
+      ansible.builtin.add_host:
+        name: "{{ satellite_host }}"
+        groups: sat_servers
+      changed_when: false
+
+    - name: Add the Capsules to group capsule_servers
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: capsule_servers
+      loop: "{{ capsule_hosts | default([]) }}"
+      changed_when: false
+
+    - name: Show the targets
+      ansible.builtin.debug:
+        msg: >-
+          Satellite: {{ satellite_host }} |
+          Capsules: {{ capsule_hosts | default([]) | join(', ') | default('none', true) }}
+
+# =============================================================================
+# Play 2 - the Satellite
+# =============================================================================
+
+- name: Patch the RHEL Satellite server
+  hosts: sat_servers
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+
+  vars:
+    <<: *patch_vars
+
+  tasks:
+
+    - name: Patch the Satellite
       block:
 
         - name: Record that the Satellite play actually ran
@@ -85,7 +105,6 @@ epmcapazn01
         - name: Show available updates
           ansible.builtin.debug:
             var: sat_check_update.stdout_lines
-
 
         - name: Update base operating system packages
           ansible.builtin.command: >-
@@ -111,24 +130,19 @@ epmcapazn01
           register: sat_service_status
           changed_when: false
 
-
-        - name: Record per-host result for the emailed report
+        - name: Record per-host result for the report
           ansible.builtin.set_fact:
             patch_report_role: satellite
-            patch_report_status: >-
-              {{ 'ok' if sat_service_status.rc == 0 and sat_api_ok | default(true) | bool
-                 else 'unhealthy' }}
+            patch_report_status: "{{ 'ok' if sat_service_status.rc == 0 else 'unhealthy' }}"
             patch_report_update_rc: "{{ sat_update.rc }}"
             patch_report_reboot_performed: true
             patch_report_service_status_rc: "{{ sat_service_status.rc }}"
-            patch_report_api_ok: "{{ sat_api_ok | default(omit) }}"
+            patch_report_updates_found: >-
+              {{ (sat_check_update.stdout | default('') | trim | length > 0) }}
 
         - name: Record whether the Satellite finished healthy, for the Capsule play
           ansible.builtin.set_fact:
-            satellite_patch_ok: >-
-              {{ hostvars['localhost'].satellite_patch_ok | default(true) | bool
-                 and sat_service_status.rc == 0
-                 and sat_api_ok | default(true) | bool }}
+            satellite_patch_ok: "{{ sat_service_status.rc == 0 }}"
           delegate_to: localhost
           delegate_facts: true
           become: false
@@ -137,11 +151,11 @@ epmcapazn01
           ansible.builtin.fail:
             msg: >-
               Satellite finished patching but is unhealthy
-              (service status rc={{ sat_service_status.rc }},
-              api ok={{ sat_api_ok | default('not checked') }}).
-          when: sat_service_status.rc != 0 or not sat_api_ok | default(true) | bool
+              (service status rc={{ sat_service_status.rc }}).
+          when: sat_service_status.rc != 0
 
       rescue:
+
         - name: Record the failure for the report
           ansible.builtin.set_fact:
             patch_report_role: satellite
@@ -159,16 +173,19 @@ epmcapazn01
           delegate_facts: true
           become: false
 
-        - name: Stop patching -- the report play still runs
+        - name: Stop patching - the report play still runs
           ansible.builtin.meta: end_play
 
-
 # =============================================================================
+# Play 3 - the Capsules, one at a time
+# =============================================================================
+
 - name: Patch Capsules one at a time
-  hosts: "{{ capsule_hosts }}"
+  hosts: capsule_servers
   become: true
   serial: 1
   max_fail_percentage: 0
+
   vars:
     <<: *patch_vars
 
@@ -188,7 +205,7 @@ epmcapazn01
           ansible.builtin.command: rpm -q satellite-maintain
           changed_when: false
 
-        - name: Check for active content sync tasks on this Capsule (optional)
+        - name: Check for active content sync tasks on this Capsule
           ansible.builtin.command: >-
             hammer --username {{ hammer_username }} --password {{ hammer_password }}
             task list --search "state=running and
@@ -200,7 +217,7 @@ epmcapazn01
           delegate_to: "{{ satellite_host }}"
           when:
             - capsule_check_sync_status | bool
-            - satellite_host | default('', true) | length > 0
+            - hammer_username | default('', true) | length > 0
 
         - name: Fail if this Capsule has an active sync task
           ansible.builtin.fail:
@@ -212,7 +229,6 @@ epmcapazn01
             - capsule_sync_tasks.stdout is defined
             - inventory_hostname in capsule_sync_tasks.stdout
 
-
         - name: Check for available package updates
           ansible.builtin.command: satellite-maintain packages check-update
           register: cap_check_update
@@ -223,7 +239,7 @@ epmcapazn01
           ansible.builtin.debug:
             var: cap_check_update.stdout_lines
 
-        - name: run update
+        - name: Update base operating system packages
           ansible.builtin.command: >-
             satellite-maintain packages update --assumeyes
             {{ satellite_packages_update_extra_args }}
@@ -247,27 +263,25 @@ epmcapazn01
           register: cap_service_status
           changed_when: false
 
-
-        - name: Record per-host result for the emailed report
+        - name: Record per-host result for the report
           ansible.builtin.set_fact:
             patch_report_role: capsule
-            patch_report_status: >-
-              {{ 'ok' if cap_service_status.rc == 0 and cap_api_ok | default(true) | bool
-                 else 'unhealthy' }}
+            patch_report_status: "{{ 'ok' if cap_service_status.rc == 0 else 'unhealthy' }}"
             patch_report_update_rc: "{{ cap_update.rc }}"
             patch_report_reboot_performed: true
             patch_report_service_status_rc: "{{ cap_service_status.rc }}"
-            patch_report_api_ok: "{{ cap_api_ok | default(omit) }}"
+            patch_report_updates_found: >-
+              {{ (cap_check_update.stdout | default('') | trim | length > 0) }}
 
         - name: Fail this Capsule if it came back unhealthy
           ansible.builtin.fail:
             msg: >-
               Capsule finished patching but is unhealthy
-              (service status rc={{ cap_service_status.rc }},
-              api ok={{ cap_api_ok | default('not checked') }}).
-          when: cap_service_status.rc != 0 or not cap_api_ok | default(true) | bool
+              (service status rc={{ cap_service_status.rc }}).
+          when: cap_service_status.rc != 0
 
       rescue:
+
         - name: Record the failure for the report
           ansible.builtin.set_fact:
             patch_report_role: capsule
@@ -284,90 +298,290 @@ epmcapazn01
           delegate_facts: true
           become: false
 
-        - name: Stop patching further Capsules -- the report play still runs
+        - name: Stop patching further Capsules - the report play still runs
           ansible.builtin.meta: end_play
 
+# =============================================================================
+# Play 4 - render the HTML report, email it as an attachment, set the exit code
+# =============================================================================
 
 - name: Render and email the patch run report
   hosts: localhost
   connection: local
   become: false
   gather_facts: true
+
   vars:
     <<: *patch_vars
-    report_path: "{{ report_local_dir }}/satellite_patch_report_{{ ansible_date_time.iso8601_basic_short }}.txt"
+    report_file_name: "satellite_patch_{{ ansible_date_time.iso8601_basic_short }}.html"
     report_targets: >-
       {{ ([satellite_host] if satellite_host | default('', true) | length > 0 else [])
          + (capsule_hosts | default([])) }}
 
   tasks:
+
+    - name: Assemble the per-host records
+      ansible.builtin.set_fact:
+        results: >-
+          {{ (results | default([])) + [{
+               'host': item,
+               'role': hostvars[item].patch_report_role | default('-'),
+               'status': hostvars[item].patch_report_status | default('not attempted') | trim,
+               'update_rc': hostvars[item].patch_report_update_rc | default('-'),
+               'rebooted': hostvars[item].patch_report_reboot_performed | default(false),
+               'service_rc': hostvars[item].patch_report_service_status_rc | default('-'),
+               'updates_found': hostvars[item].patch_report_updates_found | default('-'),
+               'failed_task': hostvars[item].patch_report_failed_task | default(''),
+               'error': hostvars[item].patch_report_error | default('') | trim
+             }] }}
+      loop: "{{ report_targets }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Compute totals
+      ansible.builtin.set_fact:
+        count_ok: "{{ results | selectattr('status', 'equalto', 'ok') | list | length }}"
+        count_failed: "{{ results | selectattr('status', 'in', ['failed', 'unhealthy']) | list | length }}"
+        count_skipped: "{{ results | selectattr('status', 'equalto', 'not attempted') | list | length }}"
+        count_rebooted: "{{ results | selectattr('rebooted') | list | length }}"
+        run_failed: "{{ patch_run_failed | default(false) | bool }}"
+
     - name: Ensure the local report directory exists
       ansible.builtin.file:
         path: "{{ report_local_dir }}"
         state: directory
         mode: "0755"
 
-    - name: Render patch report
+    - name: Render the HTML patch report
       ansible.builtin.copy:
-        dest: "{{ report_path }}"
+        dest: "{{ report_local_dir }}/{{ report_file_name }}"
         mode: "0644"
         content: |
-          ===============================================================================
-           RHEL Satellite / Capsule patch report
-          ===============================================================================
-           Generated : {{ ansible_date_time.iso8601 }}
-           Control   : {{ ansible_fqdn | default('localhost') }}
-           Result    : {{ 'FAILED' if patch_run_failed | default(false) | bool else 'SUCCESS' }}
-           Hosts     : {{ report_targets | length }} targeted
-          ===============================================================================
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <title>Satellite / Capsule patch report</title>
+          <style>
+            :root {
+              --bg: #f6f7f9; --card: #ffffff; --ink: #1c2024; --muted: #6b7280; --line: #e4e7eb;
+              --ok: #1a7f4b;  --ok-bg: #e7f6ee;
+              --bad: #b3261e; --bad-bg: #fdeceb;
+              --warn: #8a6100; --warn-bg: #fdf4e3;
+              --info: #1f5fa9; --info-bg: #e8f0fb;
+            }
+            * { box-sizing: border-box; }
+            body { margin: 0; padding: 32px; background: var(--bg); color: var(--ink);
+                   font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+            .wrap { max-width: 1150px; margin: 0 auto; }
+            h1 { font-size: 22px; margin: 0 0 4px; }
+            h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+                 color: var(--muted); margin: 0; padding: 14px 18px 0; }
+            .sub { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+            .banner { border-radius: 8px; padding: 9px 14px; font-size: 13px; margin-bottom: 24px; }
+            .banner.ok  { background: var(--ok-bg);  color: var(--ok);  border: 1px solid #bfe4d0; }
+            .banner.bad { background: var(--bad-bg); color: var(--bad); border: 1px solid #f3c4c1; }
+            .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+            .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+                    padding: 14px 18px; min-width: 128px; }
+            .card .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+            .card .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+            .card.ok .n { color: var(--ok); }
+            .card.bad .n { color: var(--bad); }
+            .card.warn .n { color: var(--warn); }
+            .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+                     margin-bottom: 16px; overflow: hidden; }
+            .panel > header { padding: 12px 18px; border-bottom: 1px solid var(--line);
+                              display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+            .panel > header .name { font-weight: 600; font-size: 16px; }
+            .panel > header .meta { color: var(--muted); font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { text-align: left; padding: 9px 18px; font-size: 14px; border-bottom: 1px solid var(--line); }
+            th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+            tbody tr:last-child td { border-bottom: 0; }
+            .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+            .pill.ok { background: var(--ok-bg); color: var(--ok); }
+            .pill.bad { background: var(--bad-bg); color: var(--bad); }
+            .pill.warn { background: var(--warn-bg); color: var(--warn); }
+            .pill.info { background: var(--info-bg); color: var(--info); }
+            code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+            pre { margin: 0; padding: 10px 14px; background: #fbfbfc; border: 1px solid var(--line);
+                  border-radius: 6px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+                  white-space: pre-wrap; word-break: break-word; }
+            .note { padding: 10px 18px 14px; font-size: 13px; color: var(--muted); }
+            footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
+          </style>
+          </head>
+          <body>
+          <div class="wrap">
 
-          {{ 'HOST'.ljust(34) }}{{ 'ROLE'.ljust(11) }}{{ 'RESULT'.ljust(14) }}{{ 'REBOOTED'.ljust(10) }}
-          {{ '-' * 79 }}
-          {% for h in report_targets %}
-          {% set hv = hostvars[h] | default({}) %}
-          {{ h[:33].ljust(34) }}{{ (hv.patch_report_role | default('-'))[:10].ljust(11) }}{{ (hv.patch_report_status | default('not attempted') | trim)[:13].ljust(14) }}{{ ('yes' if hv.patch_report_reboot_performed | default(false) | bool else 'no').ljust(10) }}
+            <h1>Satellite / Capsule patch report</h1>
+            <div class="sub">
+              {{ report_targets | length }} host{{ '' if report_targets | length == 1 else 's' }} targeted &middot;
+              generated {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}
+            </div>
+            <div class="banner {{ 'bad' if run_failed | bool else 'ok' }}">
+              {% if run_failed | bool %}
+              This run <strong>FAILED</strong>. Packages were installed and hosts were rebooted -
+              review the detail below before re-running.
+              {% else %}
+              This run completed. Packages were installed and each host was rebooted and
+              re-checked with <code>satellite-maintain service status</code>.
+              {% endif %}
+            </div>
+
+            <div class="cards">
+              <div class="card {{ 'bad' if run_failed | bool else 'ok' }}">
+                <div class="n">{{ 'FAILED' if run_failed | bool else 'OK' }}</div>
+                <div class="l">Result</div>
+              </div>
+              <div class="card"><div class="n">{{ report_targets | length }}</div><div class="l">Targeted</div></div>
+              <div class="card ok"><div class="n">{{ count_ok }}</div><div class="l">Patched OK</div></div>
+              <div class="card {{ 'bad' if count_failed | int > 0 else 'ok' }}">
+                <div class="n">{{ count_failed }}</div><div class="l">Failed</div>
+              </div>
+              <div class="card warn"><div class="n">{{ count_skipped }}</div><div class="l">Not attempted</div></div>
+              <div class="card"><div class="n">{{ count_rebooted }}</div><div class="l">Rebooted</div></div>
+            </div>
+
+            <section class="panel">
+              <h3>Summary</h3>
+              <table>
+                <thead>
+                  <tr><th>Host</th><th>Role</th><th>Result</th><th>Updates found</th>
+                      <th>Update rc</th><th>Rebooted</th><th>Service status rc</th></tr>
+                </thead>
+                <tbody>
+                {% for r in results %}
+                  <tr>
+                    <td><strong>{{ r.host }}</strong></td>
+                    <td>{{ r.role }}</td>
+                    <td>
+                      {% if r.status == 'ok' %}<span class="pill ok">ok</span>
+                      {% elif r.status == 'not attempted' %}<span class="pill warn">not attempted</span>
+                      {% else %}<span class="pill bad">{{ r.status }}</span>{% endif %}
+                    </td>
+                    <td><code>{{ r.updates_found }}</code></td>
+                    <td><code>{{ r.update_rc }}</code></td>
+                    <td>{{ 'yes' if r.rebooted else 'no' }}</td>
+                    <td><code>{{ r.service_rc }}</code></td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+            </section>
+
+          {% for r in results %}
+            <section class="panel">
+              <header>
+                <span class="name">{{ r.host }}</span>
+                <span class="meta">{{ r.role }}</span>
+                {% if r.status == 'ok' %}<span class="pill ok">ok</span>
+                {% elif r.status == 'not attempted' %}<span class="pill warn">not attempted</span>
+                {% else %}<span class="pill bad">{{ r.status }}</span>{% endif %}
+              </header>
+              {% if r.status == 'not attempted' %}
+              <div class="note">
+                Never reached - the run stopped before this host, or it was skipped because
+                the Satellite did not finish healthy.
+              </div>
+              {% elif r.status == 'failed' %}
+              <div class="note">
+                Failed at task <strong>{{ r.failed_task }}</strong>:
+                <pre>{{ r.error }}</pre>
+              </div>
+              {% else %}
+              <table>
+                <tbody>
+                  <tr><td>Updates were available</td><td><code>{{ r.updates_found }}</code></td></tr>
+                  <tr><td>Package update</td><td>rc=<code>{{ r.update_rc }}</code></td></tr>
+                  <tr><td>Reboot performed</td><td>{{ 'yes' if r.rebooted else 'no' }}</td></tr>
+                  <tr><td><code>satellite-maintain service status</code></td>
+                      <td>rc=<code>{{ r.service_rc }}</code></td></tr>
+                </tbody>
+              </table>
+              {% endif %}
+            </section>
           {% endfor %}
 
-          -------------------------------------------------------------------------------
-           Detail
-          -------------------------------------------------------------------------------
-          {% for h in report_targets %}
-          {% set hv = hostvars[h] | default({}) %}
+            <footer>
+              Generated by <code>satellite_patch.yml</code>. This job installs updates and
+              reboots hosts; it is not a read-only check.
+            </footer>
 
-           {{ h }} ({{ hv.patch_report_role | default('unknown role') }})
-             status              : {{ hv.patch_report_status | default('not attempted') | trim }}
-          {% if hv.patch_report_status is not defined %}
-             (never reached -- the run stopped before it, or it was skipped
-              because the Satellite did not finish healthy)
-          {% elif hv.patch_report_status | trim == 'failed' %}
-             failed task         : {{ hv.patch_report_failed_task | default('unknown') }}
-             error               : {{ hv.patch_report_error | default('see job output') | trim }}
-          {% else %}
-             update              : rc={{ hv.patch_report_update_rc | default('-') }}
-             reboot performed    : {{ 'yes' if hv.patch_report_reboot_performed | default(false) | bool else 'no' }}
-             service status      : rc={{ hv.patch_report_service_status_rc | default('-') }}
-             api check           : {{ hv.patch_report_api_ok | default('not checked') }}
-          {% endif %}
-          {% endfor %}
+          </div>
+          </body>
+          </html>
 
- 
-    - name: Email patch report
+    - name: Report location
+      ansible.builtin.debug:
+        msg: "Report written to {{ report_local_dir }}/{{ report_file_name }} in the execution environment"
+
+    - name: Email the patch report as an attachment
       community.general.mail:
         host: "{{ report_email_smtp_host }}"
         port: "{{ report_email_smtp_port }}"
-        username: "{{ report_email_smtp_username | default(omit, true) }}"
-        password: "{{ report_email_smtp_password | default(omit, true) }}"
         secure: "{{ report_email_smtp_secure }}"
-        from: "jorge.chavez@mckesson.com"
-        to: "{{ report_email_to if report_email_to is string else report_email_to | join(',') }}"
+        username: "{{ report_email_smtp_username | default('', true) or omit }}"
+        password: "{{ report_email_smtp_password | default('', true) or omit }}"
+        from: "{{ report_email_from }}"
+        to: "{{ report_email_to }}"
         subject: >-
-          [{{ 'FAILED' if patch_run_failed | default(false) | bool else 'OK' }}]
-          Satellite/Capsule patch report - {{ ansible_date_time.date }}
-        body: "{{ lookup('file', report_path) }}"
-        attach: "{{ [report_path] if report_email_attach_report | bool else omit }}"
+          [{{ 'FAILED' if run_failed | bool else 'OK' }}]
+          Satellite/Capsule patch report - {{ ansible_date_time.date }} -
+          {{ count_ok }} ok, {{ count_failed }} failed, {{ count_skipped }} not attempted
+        subtype: html
+        charset: utf-8
+        attach: "{{ [report_local_dir ~ '/' ~ report_file_name] if report_email_attach_report | bool else omit }}"
+        body: |
+          <p style="font:15px/1.5 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            Satellite / Capsule patch run,
+            {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }} -
+            <strong style="color:{{ '#b3261e' if run_failed | bool else '#1a7f4b' }}">
+              {{ 'FAILED' if run_failed | bool else 'OK' }}</strong>.
+            {% if report_email_attach_report | bool %}
+            The full report is attached as <strong>{{ report_file_name }}</strong>.
+            {% endif %}
+          </p>
+          <table cellpadding="6" cellspacing="0" border="0"
+                 style="border-collapse:collapse;font:14px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            <tr style="background:#f0f1f3">
+              <th align="left">Host</th><th align="left">Role</th><th align="left">Result</th>
+              <th align="left">Rebooted</th>
+            </tr>
+          {% for r in results %}
+            <tr style="border-top:1px solid #e4e7eb">
+              <td>{{ r.host }}</td>
+              <td>{{ r.role }}</td>
+              <td style="color:{{ '#1a7f4b' if r.status == 'ok' else ('#8a6100' if r.status == 'not attempted' else '#b3261e') }}">
+                <strong>{{ r.status }}</strong>
+              </td>
+              <td>{{ 'yes' if r.rebooted else 'no' }}</td>
+            </tr>
+          {% endfor %}
+          </table>
+          <p style="color:#6b7280;font:12px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            This job installs package updates and reboots hosts.
+          </p>
       when: report_email_enabled | bool
+      register: mail_result
+      failed_when: false
+
+    - name: Warn if the email could not be sent
+      ansible.builtin.debug:
+        msg: >-
+          The patch run finished but the email failed:
+          {{ mail_result.msg | default('unknown error') }}
+          Report is at {{ report_local_dir }}/{{ report_file_name }}.
+      when:
+        - not (mail_result.skipped | default(false))
+        - mail_result.failed | default(false)
+          or (mail_result.msg | default('') is search('(?i)error|refused|timed out'))
 
     - name: Fail the run if any host failed to patch
       ansible.builtin.fail:
-        msg: "One or more hosts failed to patch. See the report at {{ report_path }}."
-      when: patch_run_failed | default(false) | bool
+        msg: >-
+          One or more hosts failed to patch
+          ({{ count_failed }} failed, {{ count_skipped }} not attempted).
+          See the emailed report.
+      when: run_failed | bool or count_failed | int > 0
