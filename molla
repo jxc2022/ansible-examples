@@ -1,37 +1,83 @@
 ---
+# check_web_db_services.yml
+#
+# READ-ONLY health check for SUSE Linux servers (SLES / openSUSE), run as an
+# Ansible Automation Platform job template:
+#   * is nginx running and enabled?
+#   * is mariadb running and enabled?
+#   * what patches / package updates are pending?
+#
+# This playbook NEVER starts, stops, restarts or reconfigures a service, and
+# NEVER installs or upgrades a package. The zypper step is a simulation
+# (`--dry-run`, i.e. the equivalent of answering "no" at the confirm prompt).
+#
+# Plays
+#   1. Build the dynamic group linux_servers from server_list.
+#   2. Run the checks on every host in that group (facts only).
+#   3. On localhost, render ONE consolidated HTML report covering all hosts
+#      and email it. Runs with connection: local so it stays inside the EE.
+#   4. Fail the job if any monitored service is down - after the email.
+#
+# AAP notes
+#   - Tick "Privilege Escalation" on the job template; play 2 needs root.
+#   - Requires the community.general collection (community.general.mail).
+#   - The EE needs network access to the SMTP relay.
+#   - Put smtp_username / smtp_password in an AAP credential or vault.
+#
+# Extra vars / survey:
+#   server_list            newline-separated hostnames to check
+#   fail_on_down=false     report without failing the job (default: true)
+#   check_updates=false    skip the zypper steps (default: true)
+#   refresh_repos=false    use cached metadata instead of `zypper refresh`
+#   send_email=false       skip the email (default: true)
+#   mail_only_on_problem=true  email only when something is down or a security
+#                          patch is pending (default: false - always email)
+
 - name: Build dynamic inventory
   hosts: localhost
-  gather_facts: no
+  connection: local
+  gather_facts: false
 
   vars:
     server_list: |
-       epmrmtmaw3p01.sap.mckesson.com
+      epmrmtmaw3p01.sap.mckesson.com
+
   tasks:
+
+    # splitlines() rather than split('\n'): inside a folded (>-) YAML scalar a
+    # literal \n is NOT unescaped, so split('\n') silently returns the whole
+    # blob as one "hostname". splitlines() also copes with CRLF from a survey.
     - name: Convert server_list string to a list
-      set_fact:
-        servers: "{{ server_list.split('\n')
-                     | map('trim')
-                     | select('ne','')
-                     | unique
-                     | list }}"
+      ansible.builtin.set_fact:
+        servers: >-
+          {{ server_list.splitlines() | map('trim') | select('ne', '') | unique | list }}
+
+    - name: Fail early if no servers were supplied
+      ansible.builtin.fail:
+        msg: "server_list is empty - nothing to check."
+      when: servers | length == 0
 
     - name: Create dynamic group linux_servers
-      add_host:
+      ansible.builtin.add_host:
         name: "{{ item }}"
         groups: linux_servers
       loop: "{{ servers }}"
+      changed_when: false
 
     - name: Show dynamically added servers
-      debug:
-        msg: "Added {{ servers }} to group linux_servers"
+      ansible.builtin.debug:
+        msg: "Added {{ servers | join(', ') }} to group linux_servers"
+
+# ===================================================================
+# Play 2 - the checks. Facts only; the report is built in play 3.
+# ===================================================================
 
 - name: Health check - nginx, mariadb and pending updates
   hosts: linux_servers
   gather_facts: true
-  become: true                    
+  become: true                     # zypper metadata + systemd state need root
 
   vars:
-    fail_on_down: true
     check_ports: true
     check_updates: true
     refresh_repos: true
@@ -39,8 +85,6 @@
     mariadb_service: mariadb.service
     nginx_port: 443
     mariadb_port: 3306
-    report_dir: /var/log/health_check
-    report_name: service_report.html
 
   tasks:
 
@@ -133,7 +177,7 @@
               | default(1 if (zypper_dryrun.stdout | default('') is search('going to be upgraded')) else 0)) | int }}
 
     # ---------------------------------------------------------------
-    # Assemble the record used by the report
+    # Assemble the record play 3 turns into the report
     # ---------------------------------------------------------------
 
     - name: Assemble result record
@@ -170,7 +214,6 @@
                 | regex_findall('(?m)^(?:The following.*|Nothing to do\.|\d+ packages? to upgrade.*)$'))
                | join(' / ') | default('n/a', true) }}
           refresh_ok: "{{ (zypper_refresh.rc | default(0)) == 0 }}"
-          report_path: "{{ report_dir }}/{{ report_name }}"
 
     - name: Show result
       ansible.builtin.debug:
@@ -182,31 +225,72 @@
           patches={{ svc_result.patch_total }}
           ({{ svc_result.patch_security }} security)
 
-    # ---------------------------------------------------------------
-    # Report - rendered from the inline template below and written on the
-    # server, since the AAP execution environment is ephemeral.
-    # ---------------------------------------------------------------
+# ===================================================================
+# Play 3 - build ONE consolidated report and email it.
+#
+# Runs on localhost with connection: local so it stays inside the EE and
+# never picks up the machine credential.
+# ===================================================================
+
 - name: Build and email consolidated HTML report
   hosts: localhost
-  gather_facts: yes
-  tasks:
-    - name: Ensure report directory exists
-      ansible.builtin.file:
-        path: "{{ report_dir }}"
-        state: directory
-        mode: "0755"
+  connection: local
+  gather_facts: true
+  become: false
 
-    - name: Render the HTML report
+  vars:
+    send_email: true
+    mail_only_on_problem: false
+    smtp_host: smtp.mckesson.com
+    smtp_port: 25
+    smtp_secure: starttls       # never | starttls | ssl | try
+    smtp_username: ""           # leave empty for an unauthenticated relay
+    smtp_password: ""
+    mail_from: jorge.chavez@mckesson.com
+    mail_to:
+      - jorge.chavez@mckesson.com
+
+  tasks:
+
+    - name: Gather every host that produced a result
+      ansible.builtin.set_fact:
+        results: >-
+          {{ (results | default([])) + [hostvars[item].svc_result] }}
+      loop: "{{ groups['linux_servers'] | default([]) }}"
+      when: hostvars[item].svc_result is defined
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Nothing to report
+      ansible.builtin.debug:
+        msg: "No host produced a result - skipping the report and email."
+      when: results | default([]) | length == 0
+
+    - name: Compute totals across all hosts
+      ansible.builtin.set_fact:
+        hosts_down: >-
+          {{ results | default([])
+             | map(attribute='services')
+             | map('selectattr', 'state', 'ne', 'running')
+             | map('list') | select | list | length }}
+        total_patches: >-
+          {{ results | default([]) | map(attribute='patch_total') | map('int') | sum }}
+        total_security: >-
+          {{ results | default([]) | map(attribute='patch_security') | map('int') | sum }}
+        total_upgradable: >-
+          {{ results | default([]) | map(attribute='upgrade_total') | map('int') | sum }}
+      when: results | default([]) | length > 0
+
+    - name: Render the consolidated HTML report
       vars:
-        h: "{{ svc_result }}"
-        down_services: "{{ svc_result.services | rejectattr('state', 'equalto', 'running') | list }}"
+        hosts_list: "{{ results | default([]) }}"
       ansible.builtin.set_fact:
         report_html: |
           <!DOCTYPE html>
           <html lang="en">
           <head>
           <meta charset="utf-8">
-          <title>Health Check - {{ h.host }}</title>
+          <title>Health Check - {{ hosts_list | length }} host{{ '' if hosts_list | length == 1 else 's' }}</title>
           <style>
             :root {
               --bg: #f6f7f9; --card: #ffffff; --ink: #1c2024; --muted: #6b7280; --line: #e4e7eb;
@@ -247,47 +331,48 @@
             .pill.ok { background: var(--ok-bg); color: var(--ok); }
             .pill.bad { background: var(--bad-bg); color: var(--bad); }
             .pill.warn { background: var(--warn-bg); color: var(--warn); }
-            .pill.info { background: var(--info-bg); color: var(--info); }
             code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
             .note { padding: 10px 18px 14px; font-size: 13px; color: var(--muted); }
-            details { border-top: 1px solid var(--line); }
-            details > summary { padding: 10px 18px; cursor: pointer; font-size: 13px; font-weight: 600; }
-            details[open] > summary { border-bottom: 1px solid var(--line); }
-            .scroll { max-height: 340px; overflow-y: auto; }
             footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
           </style>
           </head>
           <body>
           <div class="wrap">
 
-            <h1>Health Check - {{ h.host }}</h1>
+            <h1>Health Check</h1>
             <div class="sub">
               nginx &amp; mariadb on SUSE Linux &middot;
+              {{ hosts_list | length }} host{{ '' if hosts_list | length == 1 else 's' }} &middot;
               generated {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}
             </div>
             <div class="banner">
               Read-only run. No service was started, stopped or restarted, and no package was
-              installed or upgraded - the update figures below come from
+              installed or upgraded - the update figures come from
               <code>zypper update --dry-run</code> and <code>zypper patch-check</code>.
             </div>
 
             <div class="cards">
-              <div class="card {{ 'bad' if down_services else 'ok' }}">
-                <div class="n">{{ 'FAIL' if down_services else 'OK' }}</div>
-                <div class="l">Services</div>
+              <div class="card {{ 'bad' if hosts_down | int > 0 else 'ok' }}">
+                <div class="n">{{ 'FAIL' if hosts_down | int > 0 else 'OK' }}</div>
+                <div class="l">Overall</div>
               </div>
-              <div class="card warn"><div class="n">{{ h.upgrade_total }}</div><div class="l">Upgradable</div></div>
-              <div class="card"><div class="n">{{ h.patch_total }}</div><div class="l">Patches needed</div></div>
-              <div class="card {{ 'bad' if h.patch_security | int > 0 else 'ok' }}">
-                <div class="n">{{ h.patch_security }}</div><div class="l">Security patches</div>
+              <div class="card"><div class="n">{{ hosts_list | length }}</div><div class="l">Hosts checked</div></div>
+              <div class="card {{ 'bad' if hosts_down | int > 0 else 'ok' }}">
+                <div class="n">{{ hosts_down }}</div><div class="l">Hosts with issues</div>
               </div>
-              <div class="card"><div class="n">{{ h.uptime_days }}</div><div class="l">Uptime (days)</div></div>
+              <div class="card warn"><div class="n">{{ total_upgradable }}</div><div class="l">Upgradable</div></div>
+              <div class="card {{ 'bad' if total_security | int > 0 else 'ok' }}">
+                <div class="n">{{ total_security }}</div><div class="l">Security patches</div>
+              </div>
             </div>
 
+          {% for h in hosts_list %}
+          {% set down = h.services | rejectattr('state', 'equalto', 'running') | list %}
             <section class="panel">
               <header>
                 <span class="name">{{ h.host }}</span>
-                <span class="meta">{{ h.os }} &middot; kernel {{ h.kernel }}</span>
+                <span class="meta">{{ h.os }} &middot; kernel {{ h.kernel }} &middot; up {{ h.uptime_days }} d</span>
+                <span class="pill {{ 'bad' if down else 'ok' }}">{{ 'FAIL' if down else 'OK' }}</span>
               </header>
 
               <h3>Services</h3>
@@ -355,6 +440,7 @@
               {% endif %}
 
             </section>
+          {% endfor %}
 
             <footer>
               Port status is checked on 127.0.0.1 only - a "closed" result can mean the service is
@@ -365,95 +451,46 @@
           </div>
           </body>
           </html>
+      when: results | default([]) | length > 0
 
-    - name: Write the HTML report to the server
-      ansible.builtin.copy:
-        dest: "{{ report_dir }}/{{ report_name }}"
-        mode: "0644"
-        content: "{{ report_html }}"
-
-    - name: Report location
-      ansible.builtin.debug:
-        msg: "HTML report written to {{ report_dir }}/{{ report_name }} on {{ inventory_hostname }}"
-
-
-
-- name: Email the health check report
-  #host: "smtp.mckesson.com"
-  gather_facts: false
-  become: false
-
-  vars:
-    send_email: true
-    mail_only_on_problem: false
-    smtp_port: 25
-    smtp_secure: starttls      
-    smtp_host: "smtp.mckesson.com"
-    mail_from: jorge.chavez@mckesson.com
-    mail_to:
-      - jorge.chavez@mckesson.com
-
-  tasks:
-
-    - name: Collect the hosts that produced a report
-      ansible.builtin.set_fact:
-        reported_hosts: "{{ (reported_hosts | default([])) + [item] }}"
-      loop: "{{ groups['all'] | default([]) }}"
-      when: hostvars[item].report_html is defined
-      loop_control:
-        label: "{{ item }}"
-
-    - name: Nothing to email
-      ansible.builtin.debug:
-        msg: "No host produced a report - skipping email."
-      when: reported_hosts | default([]) | length == 0
-
-    - name: Email the health check report
-      vars:
-        r: "{{ hostvars[item].svc_result }}"
-        down_services: >-
-          {{ hostvars[item].svc_result.services
-             | rejectattr('state', 'equalto', 'running')
-             | map(attribute='name') | list }}
+    - name: Email the consolidated report
       community.general.mail:
         host: "{{ smtp_host }}"
         port: "{{ smtp_port }}"
         secure: "{{ smtp_secure }}"
+        username: "{{ smtp_username | default('', true) or omit }}"
+        password: "{{ smtp_password | default('', true) or omit }}"
         from: "{{ mail_from }}"
         to: "{{ mail_to }}"
         subject: >-
-          [{{ 'FAIL' if down_services else 'OK' }}] Health check {{ item }} -
-          {{ ('services down: ' ~ down_services | join(', ')) if down_services else 'nginx + mariadb running' }},
-          {{ r.patch_total }} patches ({{ r.patch_security }} security)
+          [{{ 'FAIL' if hosts_down | int > 0 else 'OK' }}] Health check -
+          {{ results | length }} host{{ '' if results | length == 1 else 's' }},
+          {{ hosts_down }} with services down,
+          {{ total_patches }} patches ({{ total_security }} security)
         subtype: html
-        body: "{{ hostvars[item].report_html }}"
+        body: "{{ report_html }}"
         charset: utf-8
-      loop: "{{ reported_hosts | default([]) }}"
-      loop_control:
-        label: "{{ item }}"
       when:
         - send_email | bool
+        - results | default([]) | length > 0
         - (not mail_only_on_problem | bool)
-          or (down_services | length > 0)
-          or (r.patch_security | int > 0)
+          or (hosts_down | int > 0)
+          or (total_security | int > 0)
       register: mail_result
       failed_when: false
 
-    - name: Warn if an email could not be sent
+    - name: Warn if the email could not be sent
       ansible.builtin.debug:
-        msg: >-
-          Report for {{ item.item }} is on the server at
-          {{ hostvars[item.item].svc_result.report_path }}, but the email failed:
-          {{ item.msg | default('unknown error') }}
-      loop: "{{ mail_result.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item | default('-') }}"
+        msg: "The health check completed but the email failed: {{ mail_result.msg | default('unknown error') }}"
       when:
-        - not (item.skipped | default(false))
-        - item.failed | default(false)
-          or (item.msg | default('') is search('(?i)error|refused|timed out'))
+        - not (mail_result.skipped | default(false))
+        - mail_result.failed | default(false)
+          or (mail_result.msg | default('') is search('(?i)error|refused|timed out'))
 
-
+# ===================================================================
+# Play 4 - exit code. After the email, so a down service is reported
+# before the job goes red.
+# ===================================================================
 
 - name: Evaluate service health
   hosts: linux_servers
@@ -471,9 +508,9 @@
           - item.state == 'running'
         fail_msg: >-
           {{ item.name }} is NOT running on {{ inventory_hostname }}
-          (state={{ item.state }}) - see {{ svc_result.report_path | default('the report on the server') }}.
+          (state={{ item.state }}) - see the emailed health check report.
         success_msg: "{{ item.name }} is running."
-      loop: "{{ svc_result.services }}"
+      loop: "{{ svc_result.services | default([]) }}"
       loop_control:
         label: "{{ item.name }}"
       when: fail_on_down | bool
