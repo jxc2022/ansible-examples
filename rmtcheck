@@ -482,3 +482,484 @@
       loop_control:
         label: "{{ item.name }}"
       when: fail_on_down | bool
+
+
+&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+
+---
+# check_web_db_services.yml
+#
+# READ-ONLY health check for a SUSE Linux server (SLES / openSUSE), designed to
+# run as an Ansible Automation Platform job template:
+#   * is nginx running and enabled?
+#   * is mariadb running and enabled?
+#   * what patches / package updates are pending?
+#
+# This playbook NEVER starts, stops, restarts or reconfigures a service, and
+# NEVER installs or upgrades a package. The zypper step is a simulation
+# (`--dry-run`, i.e. the equivalent of answering "no" at the confirm prompt).
+#
+# Self-contained: the HTML report template is inlined below, so this single
+# file is the whole project - no templates/ directory needed.
+#
+# AAP notes
+#   - Job template: set Inventory to the host holding the server, tick
+#     "Privilege Escalation", and expose any of the vars below as survey fields.
+#   - The execution environment is ephemeral, so the report is written ON THE
+#     SERVER ITSELF (report_dir) and overwritten on each run. The same HTML is
+#     emailed, so the run is self-contained.
+#   - Counts are published with set_stats, so they appear under the job's
+#     Artifacts tab and can be consumed by later nodes in a workflow.
+#   - Requires the community.general collection (for community.general.mail).
+#     Put it in collections/requirements.yml, or use an EE that bundles it.
+#   - The mail task runs from the EE, so the EE needs network access to the
+#     SMTP relay. Store smtp_username / smtp_password in an AAP credential or
+#     vault - do not hardcode them here.
+#
+# Extra vars / survey:
+#   fail_on_down=false     report without failing the job (default: true)
+#   check_updates=false    skip the zypper steps entirely (default: true)
+#   refresh_repos=false    use cached metadata instead of `zypper refresh` (default: true)
+#   report_dir=/var/log/health_check    where the report is written on the server
+#   send_email=false       skip the email (default: true)
+#   mail_only_on_problem=true  email only when a service is down or security
+#                          patches are pending (default: false - always email)
+#   smtp_host, smtp_port, smtp_secure, smtp_username, smtp_password
+#   mail_from, mail_to (list)
+
+- name: Health check - nginx, mariadb and pending updates
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: true
+  become: true                     # zypper metadata + systemd state need root
+
+  vars:
+    fail_on_down: true
+    check_ports: true
+    check_updates: true
+    refresh_repos: true
+    nginx_service: nginx.service
+    mariadb_service: mariadb.service
+    nginx_port: 80
+    mariadb_port: 3306
+    report_dir: /var/log/health_check
+    report_name: service_report.html
+
+    # --- email ---
+    send_email: true
+    mail_only_on_problem: false
+    smtp_host: smtp.corp.lan
+    smtp_port: 25
+    smtp_secure: try            # never | starttls | ssl | try
+    smtp_username: ""           # leave empty for an unauthenticated relay
+    smtp_password: ""
+    mail_from: "ansible-health@{{ ansible_domain | default('corp.lan', true) }}"
+    mail_to:
+      - linux-ops@corp.lan
+
+  tasks:
+
+    - name: Warn if host is not SUSE
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: {{ inventory_hostname }} reports os_family
+          '{{ ansible_facts.os_family }}', not 'Suse'. Unit names and the
+          zypper checks may not apply.
+      when: ansible_facts.os_family != 'Suse'
+
+    # ---------------------------------------------------------------
+    # Service state
+    # ---------------------------------------------------------------
+
+    - name: Collect package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Check nginx port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ nginx_port }}"
+        timeout: 5
+      register: nginx_listen
+      failed_when: false
+      when: check_ports | bool
+
+    - name: Check mariadb port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mariadb_port }}"
+        timeout: 5
+      register: mariadb_listen
+      failed_when: false
+      when: check_ports | bool
+
+    # ---------------------------------------------------------------
+    # Pending updates - simulation only, nothing is applied
+    # ---------------------------------------------------------------
+
+    - name: Refresh zypper repository metadata
+      ansible.builtin.command:
+        cmd: zypper --non-interactive refresh
+      register: zypper_refresh
+      changed_when: false
+      failed_when: false
+      when:
+        - check_updates | bool
+        - refresh_repos | bool
+        - ansible_facts.os_family == 'Suse'
+
+    - name: Simulate a full update (dry run - answers "no", applies nothing)
+      ansible.builtin.command:
+        cmd: zypper --non-interactive update --dry-run
+      register: zypper_dryrun
+      changed_when: false
+      failed_when: false
+      when:
+        - check_updates | bool
+        - ansible_facts.os_family == 'Suse'
+
+    - name: Summarise patch counts
+      ansible.builtin.command:
+        cmd: zypper --non-interactive patch-check
+      register: zypper_patch_check
+      changed_when: false
+      failed_when: false
+      when:
+        - check_updates | bool
+        - ansible_facts.os_family == 'Suse'
+
+    - name: Parse patch and dry-run counts
+      ansible.builtin.set_fact:
+        patch_total: >-
+          {{ (zypper_patch_check.stdout | default('')
+              | regex_search('(\d+)\s+patch(?:es)?\s+needed', '\1')
+              | default([], true) | first | default(0)) | int }}
+        patch_security: >-
+          {{ (zypper_patch_check.stdout | default('')
+              | regex_search('\((\d+)\s+security', '\1')
+              | default([], true) | first | default(0)) | int }}
+        upgrade_total: >-
+          {{ (zypper_dryrun.stdout | default('')
+              | regex_search('The following (\d+) package', '\1')
+              | default([], true) | first
+              | default(1 if (zypper_dryrun.stdout | default('') is search('going to be upgraded')) else 0)) | int }}
+
+    # ---------------------------------------------------------------
+    # Assemble the record used by the report
+    # ---------------------------------------------------------------
+
+    - name: Assemble result record
+      ansible.builtin.set_fact:
+        svc_result:
+          host: "{{ inventory_hostname }}"
+          os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+          kernel: "{{ ansible_facts.kernel }}"
+          uptime_days: "{{ (ansible_facts.uptime_seconds | default(0) | int / 86400) | round(1) }}"
+          checked_updates: "{{ check_updates | bool and ansible_facts.os_family == 'Suse' }}"
+          services:
+            - name: nginx
+              unit: "{{ nginx_service }}"
+              installed: "{{ 'nginx' in ansible_facts.packages }}"
+              version: "{{ ansible_facts.packages['nginx'][0].version | default('n/a') }}"
+              state: "{{ ansible_facts.services[nginx_service].state | default('not-installed') }}"
+              enabled: "{{ ansible_facts.services[nginx_service].status | default('unknown') }}"
+              port: "{{ nginx_port }}"
+              listening: "{{ (nginx_listen.state | default('')) == 'started' }}"
+            - name: mariadb
+              unit: "{{ mariadb_service }}"
+              installed: "{{ 'mariadb' in ansible_facts.packages }}"
+              version: "{{ ansible_facts.packages['mariadb'][0].version | default('n/a') }}"
+              state: "{{ ansible_facts.services[mariadb_service].state | default('not-installed') }}"
+              enabled: "{{ ansible_facts.services[mariadb_service].status | default('unknown') }}"
+              port: "{{ mariadb_port }}"
+              listening: "{{ (mariadb_listen.state | default('')) == 'started' }}"
+          patch_total: "{{ patch_total | default(0) | int }}"
+          patch_security: "{{ patch_security | default(0) | int }}"
+          upgrade_total: "{{ upgrade_total | default(0) | int }}"
+          patch_check: "{{ zypper_patch_check.stdout | default('') | trim }}"
+          dry_run_summary: >-
+            {{ (zypper_dryrun.stdout | default('') | trim
+                | regex_findall('(?m)^(?:The following.*|Nothing to do\.|\d+ packages? to upgrade.*)$'))
+               | join(' / ') | default('n/a', true) }}
+          refresh_ok: "{{ (zypper_refresh.rc | default(0)) == 0 }}"
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          nginx={{ svc_result.services[0].state }},
+          mariadb={{ svc_result.services[1].state }},
+          upgradable={{ svc_result.upgrade_total }},
+          patches={{ svc_result.patch_total }}
+          ({{ svc_result.patch_security }} security)
+
+    # ---------------------------------------------------------------
+    # Report - rendered from the inline template below and written on the
+    # server, since the AAP execution environment is ephemeral.
+    # ---------------------------------------------------------------
+
+    - name: Ensure report directory exists
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render the HTML report
+      vars:
+        h: "{{ svc_result }}"
+        down_services: "{{ svc_result.services | rejectattr('state', 'equalto', 'running') | list }}"
+      ansible.builtin.set_fact:
+        report_html: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <title>Health Check - {{ h.host }}</title>
+          <style>
+            :root {
+              --bg: #f6f7f9; --card: #ffffff; --ink: #1c2024; --muted: #6b7280; --line: #e4e7eb;
+              --ok: #1a7f4b;  --ok-bg: #e7f6ee;
+              --bad: #b3261e; --bad-bg: #fdeceb;
+              --warn: #8a6100; --warn-bg: #fdf4e3;
+              --info: #1f5fa9; --info-bg: #e8f0fb;
+            }
+            * { box-sizing: border-box; }
+            body { margin: 0; padding: 32px; background: var(--bg); color: var(--ink);
+                   font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+            .wrap { max-width: 1150px; margin: 0 auto; }
+            h1 { font-size: 22px; margin: 0 0 4px; }
+            h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+                 color: var(--muted); margin: 0; padding: 14px 18px 0; }
+            .sub { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+            .banner { background: var(--info-bg); color: var(--info); border: 1px solid #cddff5;
+                      border-radius: 8px; padding: 9px 14px; font-size: 13px; margin-bottom: 24px; }
+            .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+            .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+                    padding: 14px 18px; min-width: 128px; }
+            .card .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+            .card .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+            .card.ok .n { color: var(--ok); }
+            .card.bad .n { color: var(--bad); }
+            .card.warn .n { color: var(--warn); }
+            .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+                     margin-bottom: 16px; overflow: hidden; }
+            .panel > header { padding: 12px 18px; border-bottom: 1px solid var(--line);
+                              display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+            .panel > header .name { font-weight: 600; font-size: 16px; }
+            .panel > header .meta { color: var(--muted); font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { text-align: left; padding: 9px 18px; font-size: 14px; border-bottom: 1px solid var(--line); }
+            th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+            tbody tr:last-child td { border-bottom: 0; }
+            .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+            .pill.ok { background: var(--ok-bg); color: var(--ok); }
+            .pill.bad { background: var(--bad-bg); color: var(--bad); }
+            .pill.warn { background: var(--warn-bg); color: var(--warn); }
+            .pill.info { background: var(--info-bg); color: var(--info); }
+            code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+            .note { padding: 10px 18px 14px; font-size: 13px; color: var(--muted); }
+            details { border-top: 1px solid var(--line); }
+            details > summary { padding: 10px 18px; cursor: pointer; font-size: 13px; font-weight: 600; }
+            details[open] > summary { border-bottom: 1px solid var(--line); }
+            .scroll { max-height: 340px; overflow-y: auto; }
+            footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
+          </style>
+          </head>
+          <body>
+          <div class="wrap">
+
+            <h1>Health Check - {{ h.host }}</h1>
+            <div class="sub">
+              nginx &amp; mariadb on SUSE Linux &middot;
+              generated {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}
+            </div>
+            <div class="banner">
+              Read-only run. No service was started, stopped or restarted, and no package was
+              installed or upgraded - the update figures below come from
+              <code>zypper update --dry-run</code> and <code>zypper patch-check</code>.
+            </div>
+
+            <div class="cards">
+              <div class="card {{ 'bad' if down_services else 'ok' }}">
+                <div class="n">{{ 'FAIL' if down_services else 'OK' }}</div>
+                <div class="l">Services</div>
+              </div>
+              <div class="card warn"><div class="n">{{ h.upgrade_total }}</div><div class="l">Upgradable</div></div>
+              <div class="card"><div class="n">{{ h.patch_total }}</div><div class="l">Patches needed</div></div>
+              <div class="card {{ 'bad' if h.patch_security | int > 0 else 'ok' }}">
+                <div class="n">{{ h.patch_security }}</div><div class="l">Security patches</div>
+              </div>
+              <div class="card"><div class="n">{{ h.uptime_days }}</div><div class="l">Uptime (days)</div></div>
+            </div>
+
+            <section class="panel">
+              <header>
+                <span class="name">{{ h.host }}</span>
+                <span class="meta">{{ h.os }} &middot; kernel {{ h.kernel }}</span>
+              </header>
+
+              <h3>Services</h3>
+              <table>
+                <thead>
+                  <tr><th>Service</th><th>Unit</th><th>Version</th><th>State</th><th>Boot</th><th>Port</th></tr>
+                </thead>
+                <tbody>
+                {% for s in h.services %}
+                  <tr>
+                    <td><strong>{{ s.name }}</strong></td>
+                    <td><code>{{ s.unit }}</code></td>
+                    <td><code>{{ s.version }}</code></td>
+                    <td>
+                      {% if s.state == 'running' %}<span class="pill ok">running</span>
+                      {% elif s.state == 'not-installed' %}<span class="pill bad">not installed</span>
+                      {% else %}<span class="pill bad">{{ s.state }}</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.enabled == 'enabled' %}<span class="pill ok">enabled</span>
+                      {% else %}<span class="pill warn">{{ s.enabled }}</span>{% endif %}
+                    </td>
+                    <td>
+                      {% if s.listening %}<span class="pill ok">{{ s.port }} open</span>
+                      {% else %}<span class="pill warn">{{ s.port }} closed</span>{% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+                </tbody>
+              </table>
+
+              {% if h.checked_updates %}
+              <h3>Pending updates (simulated, not applied)</h3>
+              <table>
+                <thead><tr><th>Check</th><th>Result</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td>Repository metadata</td>
+                    <td>
+                      {% if h.refresh_ok %}<span class="pill ok">refreshed</span>
+                      {% else %}<span class="pill warn">refresh failed - figures may be stale</span>{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Packages upgradable<br><code>zypper update --dry-run</code></td>
+                    <td>
+                      {% if h.upgrade_total | int > 0 %}<span class="pill warn">{{ h.upgrade_total }}</span>
+                      {% else %}<span class="pill ok">none</span>{% endif %}
+                      {% if h.dry_run_summary and h.dry_run_summary != 'n/a' %}<br><code>{{ h.dry_run_summary }}</code>{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Patches needed<br><code>zypper patch-check</code></td>
+                    <td>
+                      {% if h.patch_total | int > 0 %}<span class="pill warn">{{ h.patch_total }}</span>
+                      {% else %}<span class="pill ok">none</span>{% endif %}
+                      {% if h.patch_security | int > 0 %} <span class="pill bad">{{ h.patch_security }} security</span>{% endif %}
+                      {% if h.patch_check %}<br><code>{{ h.patch_check | replace('\n', ' ') }}</code>{% endif %}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              {% else %}
+              <div class="note">Update check skipped on this host.</div>
+              {% endif %}
+
+            </section>
+
+            <footer>
+              Port status is checked on 127.0.0.1 only - a "closed" result can mean the service is
+              bound to another interface or a UNIX socket, not that it is down.
+              Generated by <code>check_web_db_services.yml</code>.
+            </footer>
+
+          </div>
+          </body>
+          </html>
+
+    - name: Write the HTML report to the server
+      ansible.builtin.copy:
+        dest: "{{ report_dir }}/{{ report_name }}"
+        mode: "0644"
+        content: "{{ report_html }}"
+
+    - name: Report location
+      ansible.builtin.debug:
+        msg: "HTML report written to {{ report_dir }}/{{ report_name }} on {{ inventory_hostname }}"
+
+    # ---------------------------------------------------------------
+    # Email the report (runs from the EE, needs community.general)
+    # ---------------------------------------------------------------
+
+    - name: Email the health check report
+      vars:
+        down_services: >-
+          {{ svc_result.services | rejectattr('state', 'equalto', 'running')
+             | map(attribute='name') | list }}
+        problem: >-
+          {{ (svc_result.services | rejectattr('state', 'equalto', 'running') | list | length > 0)
+             or (svc_result.patch_security | int > 0) }}
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        secure: "{{ smtp_secure }}"
+        username: "{{ smtp_username | default('', true) or omit }}"
+        password: "{{ smtp_password | default('', true) or omit }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: >-
+          [{{ 'FAIL' if down_services else 'OK' }}] Health check {{ inventory_hostname }} -
+          {{ ('services down: ' ~ down_services | join(', ')) if down_services else 'nginx + mariadb running' }},
+          {{ svc_result.patch_total }} patches ({{ svc_result.patch_security }} security)
+        subtype: html
+        body: "{{ report_html }}"
+        charset: utf-8
+      delegate_to: localhost
+      become: false
+      when:
+        - send_email | bool
+        - (not mail_only_on_problem | bool) or (problem | bool)
+      register: mail_result
+      failed_when: false
+
+    - name: Warn if the email could not be sent
+      ansible.builtin.debug:
+        msg: >-
+          Report was written to {{ report_dir }}/{{ report_name }} but the email failed:
+          {{ mail_result.msg | default('unknown error') }}
+      when:
+        - send_email | bool
+        - mail_result.failed | default(false) or (mail_result.msg | default('') is search('(?i)error|refused|timed out'))
+
+    # ---------------------------------------------------------------
+    # AAP artifacts + exit code
+    # ---------------------------------------------------------------
+
+    - name: Publish results as AAP job artifacts
+      ansible.builtin.set_stats:
+        data:
+          health_host: "{{ inventory_hostname }}"
+          health_nginx_state: "{{ svc_result.services[0].state }}"
+          health_mariadb_state: "{{ svc_result.services[1].state }}"
+          health_services_down: >-
+            {{ svc_result.services | rejectattr('state', 'equalto', 'running')
+               | map(attribute='name') | list }}
+          health_upgradable_packages: "{{ svc_result.upgrade_total }}"
+          health_pending_patches: "{{ svc_result.patch_total }}"
+          health_security_patches: "{{ svc_result.patch_security }}"
+          health_report_path: "{{ report_dir }}/{{ report_name }}"
+          health_email_sent: "{{ (send_email | bool) and not (mail_result.failed | default(true)) }}"
+        aggregate: false
+
+    - name: Fail the job if a monitored service is not running
+      ansible.builtin.assert:
+        that:
+          - item.state == 'running'
+        fail_msg: >-
+          {{ item.name }} is NOT running on {{ inventory_hostname }}
+          (state={{ item.state }}) - see {{ report_dir }}/{{ report_name }}.
+        success_msg: "{{ item.name }} is running."
+      loop: "{{ svc_result.services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: fail_on_down | bool
