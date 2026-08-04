@@ -249,6 +249,7 @@
     mail_from: jorge.chavez@mckesson.com
     mail_to:
       - jorge.chavez@mckesson.com
+    report_file_name: "health_check_{{ ansible_date_time.iso8601_basic_short }}.html"
 
   tasks:
 
@@ -453,7 +454,27 @@
           </html>
       when: results | default([]) | length > 0
 
-    - name: Email the consolidated report
+    # ---------------------------------------------------------------
+    # The report is sent as an attachment, so it has to exist as a file
+    # inside the EE. community.general.mail reads `attach` from the host
+    # running the module - localhost here.
+    # ---------------------------------------------------------------
+
+    - name: Create a temporary directory for the attachment
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: healthcheck
+      register: report_tmp
+      when: results | default([]) | length > 0
+
+    - name: Write the consolidated report to a file
+      ansible.builtin.copy:
+        dest: "{{ report_tmp.path }}/{{ report_file_name }}"
+        content: "{{ report_html }}"
+        mode: "0644"
+      when: results | default([]) | length > 0
+
+    - name: Email the consolidated report as an attachment
       community.general.mail:
         host: "{{ smtp_host }}"
         port: "{{ smtp_port }}"
@@ -468,8 +489,41 @@
           {{ hosts_down }} with services down,
           {{ total_patches }} patches ({{ total_security }} security)
         subtype: html
-        body: "{{ report_html }}"
         charset: utf-8
+        attach:
+          - "{{ report_tmp.path }}/{{ report_file_name }}"
+        body: |
+          <p style="font:15px/1.5 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            Health check for {{ results | length }}
+            host{{ '' if results | length == 1 else 's' }},
+            {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}.
+            The full report is attached as <strong>{{ report_file_name }}</strong>.
+          </p>
+          <table cellpadding="6" cellspacing="0" border="0"
+                 style="border-collapse:collapse;font:14px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            <tr style="background:#f0f1f3">
+              <th align="left">Host</th><th align="left">nginx</th><th align="left">mariadb</th>
+              <th align="left">Upgradable</th><th align="left">Patches</th><th align="left">Security</th>
+            </tr>
+          {% for h in results %}
+            <tr style="border-top:1px solid #e4e7eb">
+              <td>{{ h.host }}</td>
+            {% for s in h.services %}
+              <td style="color:{{ '#1a7f4b' if s.state == 'running' else '#b3261e' }}">
+                <strong>{{ s.state }}</strong>
+              </td>
+            {% endfor %}
+              <td>{{ h.upgrade_total }}</td>
+              <td>{{ h.patch_total }}</td>
+              <td style="color:{{ '#b3261e' if h.patch_security | int > 0 else '#1a7f4b' }}">
+                <strong>{{ h.patch_security }}</strong>
+              </td>
+            </tr>
+          {% endfor %}
+          </table>
+          <p style="color:#6b7280;font:12px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+            Read-only check - no service was restarted and no package was installed or upgraded.
+          </p>
       when:
         - send_email | bool
         - results | default([]) | length > 0
@@ -486,6 +540,12 @@
         - not (mail_result.skipped | default(false))
         - mail_result.failed | default(false)
           or (mail_result.msg | default('') is search('(?i)error|refused|timed out'))
+
+    - name: Remove the temporary attachment directory
+      ansible.builtin.file:
+        path: "{{ report_tmp.path }}"
+        state: absent
+      when: report_tmp.path is defined
 
 # ===================================================================
 # Play 4 - exit code. After the email, so a down service is reported
