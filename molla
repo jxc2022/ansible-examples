@@ -1,37 +1,4 @@
 ---
-# check_web_db_services.yml
-#
-# READ-ONLY health check for SUSE Linux servers (SLES / openSUSE), run as an
-# Ansible Automation Platform job template:
-#   * is nginx running and enabled?
-#   * is mariadb running and enabled?
-#   * what patches / package updates are pending?
-#
-# This playbook NEVER starts, stops, restarts or reconfigures a service, and
-# NEVER installs or upgrades a package. The zypper step is a simulation
-# (`--dry-run`, i.e. the equivalent of answering "no" at the confirm prompt).
-#
-# Plays
-#   1. Build the dynamic group linux_servers from server_list.
-#   2. Run the checks on every host in that group (facts only).
-#   3. On localhost, render ONE consolidated HTML report covering all hosts
-#      and email it. Runs with connection: local so it stays inside the EE.
-#   4. Fail the job if any monitored service is down - after the email.
-#
-# AAP notes
-#   - Tick "Privilege Escalation" on the job template; play 2 needs root.
-#   - Requires the community.general collection (community.general.mail).
-#   - The EE needs network access to the SMTP relay.
-#   - Put smtp_username / smtp_password in an AAP credential or vault.
-#
-# Extra vars / survey:
-#   server_list            newline-separated hostnames to check
-#   fail_on_down=false     report without failing the job (default: true)
-#   check_updates=false    skip the zypper steps (default: true)
-#   refresh_repos=false    use cached metadata instead of `zypper refresh`
-#   send_email=false       skip the email (default: true)
-#   mail_only_on_problem=true  email only when something is down or a security
-#                          patch is pending (default: false - always email)
 
 - name: Build dynamic inventory
   hosts: localhost
@@ -40,13 +7,11 @@
 
   vars:
     server_list: |
-      epmrmtmaw3p01.sap.mckesson.com
+      epmsatmddcn01
+epmcapazn01
 
   tasks:
 
-    # splitlines() rather than split('\n'): inside a folded (>-) YAML scalar a
-    # literal \n is NOT unescaped, so split('\n') silently returns the whole
-    # blob as one "hostname". splitlines() also copes with CRLF from a survey.
     - name: Convert server_list string to a list
       ansible.builtin.set_fact:
         servers: >-
@@ -68,509 +33,341 @@
       ansible.builtin.debug:
         msg: "Added {{ servers | join(', ') }} to group linux_servers"
 
-# ===================================================================
-# Play 2 - the checks. Facts only; the report is built in play 3.
-# ===================================================================
 
-- name: Health check - nginx, mariadb and pending updates
+- name: Patch the RHEL Satellite server
   hosts: linux_servers
-  gather_facts: true
-  become: true                     # zypper metadata + systemd state need root
+  become: true
+  serial: 1
+  max_fail_percentage: 0
 
+  vars: &patch_vars
+
+    # --- Targets -------------------------------------------------------------
+    satellite_host: "satellite.molly.lab"
+
+    capsule_hosts: []
+    # capsule_hosts:
+    #   - capsule1.molly.lab
+    #   - capsule2.molly.lab
+
+    satellite_packages_update_extra_args: ""
+    satellite_reboot_timeout: 600
+    satellite_reboot_connect_timeout: 5
+    satellite_reboot_reconnect_delay: 30
+    capsule_require_healthy_satellite: true
+    report_local_dir: "/tmp/reports"
+    recipient: "jorge.chavez@mckesson.com"
+    report_email_enabled: true
+    report_email_smtp_host: "smtp.gmail.com"
+
+  tasks:
+    - name: Patch  Satellite
+      block:
+
+        - name: Record that the Satellite play actually ran
+          ansible.builtin.set_fact:
+            satellite_play_ran: true
+          delegate_to: localhost
+          delegate_facts: true
+          run_once: true
+          become: false
+
+        - name: Verify satellite-maintain is installed
+          ansible.builtin.command: rpm -q satellite-maintain
+          changed_when: false
+
+        - name: Check for available package updates
+          ansible.builtin.command: satellite-maintain packages check-update
+          register: sat_check_update
+          changed_when: false
+          failed_when: false
+
+        - name: Show available updates
+          ansible.builtin.debug:
+            var: sat_check_update.stdout_lines
+
+
+        - name: Update base operating system packages
+          ansible.builtin.command: >-
+            satellite-maintain packages update --assumeyes
+            {{ satellite_packages_update_extra_args }}
+          register: sat_update
+          changed_when: true
+
+        - name: Show patch output
+          ansible.builtin.debug:
+            var: sat_update.stdout_lines
+
+        - name: Reboot Satellite after patching
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ satellite_reboot_timeout }}"
+            connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+            pre_reboot_delay: 5
+            post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+            test_command: satellite-maintain service status --brief
+
+        - name: Verify all Satellite services are running
+          ansible.builtin.command: satellite-maintain service status
+          register: sat_service_status
+          changed_when: false
+
+
+        - name: Record per-host result for the emailed report
+          ansible.builtin.set_fact:
+            patch_report_role: satellite
+            patch_report_status: >-
+              {{ 'ok' if sat_service_status.rc == 0 and sat_api_ok | default(true) | bool
+                 else 'unhealthy' }}
+            patch_report_update_rc: "{{ sat_update.rc }}"
+            patch_report_reboot_performed: true
+            patch_report_service_status_rc: "{{ sat_service_status.rc }}"
+            patch_report_api_ok: "{{ sat_api_ok | default(omit) }}"
+
+        - name: Record whether the Satellite finished healthy, for the Capsule play
+          ansible.builtin.set_fact:
+            satellite_patch_ok: >-
+              {{ hostvars['localhost'].satellite_patch_ok | default(true) | bool
+                 and sat_service_status.rc == 0
+                 and sat_api_ok | default(true) | bool }}
+          delegate_to: localhost
+          delegate_facts: true
+          become: false
+
+        - name: Fail the Satellite if it came back unhealthy
+          ansible.builtin.fail:
+            msg: >-
+              Satellite finished patching but is unhealthy
+              (service status rc={{ sat_service_status.rc }},
+              api ok={{ sat_api_ok | default('not checked') }}).
+          when: sat_service_status.rc != 0 or not sat_api_ok | default(true) | bool
+
+      rescue:
+        - name: Record the failure for the report
+          ansible.builtin.set_fact:
+            patch_report_role: satellite
+            patch_report_status: failed
+            patch_report_failed_task: "{{ ansible_failed_task.name | default('unknown') }}"
+            patch_report_error: >-
+              {{ ansible_failed_result.msg
+                 | default(ansible_failed_result.stderr | default('see job output')) }}
+
+        - name: Flag the run as failed and block the Capsule play
+          ansible.builtin.set_fact:
+            satellite_patch_ok: false
+            patch_run_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+          become: false
+
+        - name: Stop patching -- the report play still runs
+          ansible.builtin.meta: end_play
+
+
+# =============================================================================
+- name: Patch Capsules one at a time
+  hosts: "{{ capsule_hosts }}"
+  become: true
+  serial: 1
+  max_fail_percentage: 0
   vars:
-    check_ports: true
-    check_updates: true
-    refresh_repos: true
-    nginx_service: nginx.service
-    mariadb_service: mariadb.service
-    nginx_port: 443
-    mariadb_port: 3306
+    <<: *patch_vars
 
   tasks:
 
-    - name: Warn if host is not SUSE
-      ansible.builtin.debug:
-        msg: >-
-          WARNING: {{ inventory_hostname }} reports os_family
-          '{{ ansible_facts.os_family }}', not 'Suse'. Unit names and the
-          zypper checks may not apply.
-      when: ansible_facts.os_family != 'Suse'
-
-    # ---------------------------------------------------------------
-    # Service state
-    # ---------------------------------------------------------------
-
-    - name: Collect package facts
-      ansible.builtin.package_facts:
-        manager: auto
-
-    - name: Collect service facts
-      ansible.builtin.service_facts:
-
-    - name: Check nginx port
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ nginx_port }}"
-        timeout: 5
-      register: nginx_listen
-      failed_when: false
-      when: check_ports | bool
-
-    - name: Check mariadb port
-      ansible.builtin.wait_for:
-        host: 127.0.0.1
-        port: "{{ mariadb_port }}"
-        timeout: 5
-      register: mariadb_listen
-      failed_when: false
-      when: check_ports | bool
-
-    # ---------------------------------------------------------------
-    # Pending updates - simulation only, nothing is applied
-    # ---------------------------------------------------------------
-
-    - name: Refresh zypper repository metadata
-      ansible.builtin.command:
-        cmd: zypper --non-interactive refresh
-      register: zypper_refresh
-      changed_when: false
-      failed_when: false
+    - name: Refuse to patch Capsules if the Satellite did not finish healthy
+      ansible.builtin.meta: end_play
       when:
-        - check_updates | bool
-        - refresh_repos | bool
-        - ansible_facts.os_family == 'Suse'
+        - capsule_require_healthy_satellite | bool
+        - hostvars['localhost'].satellite_play_ran | default(false) | bool
+        - not hostvars['localhost'].satellite_patch_ok | default(false) | bool
 
-    - name: Simulate a full update (dry run - answers "no", applies nothing)
-      ansible.builtin.command:
-        cmd: zypper --non-interactive update --dry-run
-      register: zypper_dryrun
-      changed_when: false
-      failed_when: false
-      when:
-        - check_updates | bool
-        - ansible_facts.os_family == 'Suse'
+    - name: Patch the Capsule
+      block:
 
-    - name: Summarise patch counts
-      ansible.builtin.command:
-        cmd: zypper --non-interactive patch-check
-      register: zypper_patch_check
-      changed_when: false
-      failed_when: false
-      when:
-        - check_updates | bool
-        - ansible_facts.os_family == 'Suse'
+        - name: Verify satellite-maintain is installed
+          ansible.builtin.command: rpm -q satellite-maintain
+          changed_when: false
 
-    - name: Parse patch and dry-run counts
-      ansible.builtin.set_fact:
-        patch_total: >-
-          {{ (zypper_patch_check.stdout | default('')
-              | regex_search('(\d+)\s+patch(?:es)?\s+needed', '\1')
-              | default([], true) | first | default(0)) | int }}
-        patch_security: >-
-          {{ (zypper_patch_check.stdout | default('')
-              | regex_search('\((\d+)\s+security', '\1')
-              | default([], true) | first | default(0)) | int }}
-        upgrade_total: >-
-          {{ (zypper_dryrun.stdout | default('')
-              | regex_search('The following (\d+) package', '\1')
-              | default([], true) | first
-              | default(1 if (zypper_dryrun.stdout | default('') is search('going to be upgraded')) else 0)) | int }}
+        - name: Check for active content sync tasks on this Capsule (optional)
+          ansible.builtin.command: >-
+            hammer --username {{ hammer_username }} --password {{ hammer_password }}
+            task list --search "state=running and
+            (label=Actions::Katello::CapsuleContent::Sync or
+            label=Actions::Katello::CapsuleContent::UpdateContentCounts)"
+          register: capsule_sync_tasks
+          changed_when: false
+          no_log: true
+          delegate_to: "{{ satellite_host }}"
+          when:
+            - capsule_check_sync_status | bool
+            - satellite_host | default('', true) | length > 0
 
-    # ---------------------------------------------------------------
-    # Assemble the record play 3 turns into the report
-    # ---------------------------------------------------------------
+        - name: Fail if this Capsule has an active sync task
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} appears to have an active content sync task.
+              Re-run once it completes, or investigate before patching.
+          when:
+            - capsule_check_sync_status | bool
+            - capsule_sync_tasks.stdout is defined
+            - inventory_hostname in capsule_sync_tasks.stdout
 
-    - name: Assemble result record
-      ansible.builtin.set_fact:
-        svc_result:
-          host: "{{ inventory_hostname }}"
-          os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
-          kernel: "{{ ansible_facts.kernel }}"
-          uptime_days: "{{ (ansible_facts.uptime_seconds | default(0) | int / 86400) | round(1) }}"
-          checked_updates: "{{ check_updates | bool and ansible_facts.os_family == 'Suse' }}"
-          services:
-            - name: nginx
-              unit: "{{ nginx_service }}"
-              installed: "{{ 'nginx' in ansible_facts.packages }}"
-              version: "{{ ansible_facts.packages['nginx'][0].version | default('n/a') }}"
-              state: "{{ ansible_facts.services[nginx_service].state | default('not-installed') }}"
-              enabled: "{{ ansible_facts.services[nginx_service].status | default('unknown') }}"
-              port: "{{ nginx_port }}"
-              listening: "{{ (nginx_listen.state | default('')) == 'started' }}"
-            - name: mariadb
-              unit: "{{ mariadb_service }}"
-              installed: "{{ 'mariadb' in ansible_facts.packages }}"
-              version: "{{ ansible_facts.packages['mariadb'][0].version | default('n/a') }}"
-              state: "{{ ansible_facts.services[mariadb_service].state | default('not-installed') }}"
-              enabled: "{{ ansible_facts.services[mariadb_service].status | default('unknown') }}"
-              port: "{{ mariadb_port }}"
-              listening: "{{ (mariadb_listen.state | default('')) == 'started' }}"
-          patch_total: "{{ patch_total | default(0) | int }}"
-          patch_security: "{{ patch_security | default(0) | int }}"
-          upgrade_total: "{{ upgrade_total | default(0) | int }}"
-          patch_check: "{{ zypper_patch_check.stdout | default('') | trim }}"
-          dry_run_summary: >-
-            {{ (zypper_dryrun.stdout | default('') | trim
-                | regex_findall('(?m)^(?:The following.*|Nothing to do\.|\d+ packages? to upgrade.*)$'))
-               | join(' / ') | default('n/a', true) }}
-          refresh_ok: "{{ (zypper_refresh.rc | default(0)) == 0 }}"
 
-    - name: Show result
-      ansible.builtin.debug:
-        msg: >-
-          {{ inventory_hostname }}:
-          nginx={{ svc_result.services[0].state }},
-          mariadb={{ svc_result.services[1].state }},
-          upgradable={{ svc_result.upgrade_total }},
-          patches={{ svc_result.patch_total }}
-          ({{ svc_result.patch_security }} security)
+        - name: Check for available package updates
+          ansible.builtin.command: satellite-maintain packages check-update
+          register: cap_check_update
+          changed_when: false
+          failed_when: false
 
-# ===================================================================
-# Play 3 - build ONE consolidated report and email it.
-#
-# Runs on localhost with connection: local so it stays inside the EE and
-# never picks up the machine credential.
-# ===================================================================
+        - name: Show available updates
+          ansible.builtin.debug:
+            var: cap_check_update.stdout_lines
 
-- name: Build and email consolidated HTML report
+        - name: run update
+          ansible.builtin.command: >-
+            satellite-maintain packages update --assumeyes
+            {{ satellite_packages_update_extra_args }}
+          register: cap_update
+          changed_when: true
+
+        - name: Show patch output
+          ansible.builtin.debug:
+            var: cap_update.stdout_lines
+
+        - name: Reboot Capsule after patching
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ satellite_reboot_timeout }}"
+            connect_timeout: "{{ satellite_reboot_connect_timeout }}"
+            pre_reboot_delay: 5
+            post_reboot_delay: "{{ satellite_reboot_reconnect_delay }}"
+            test_command: satellite-maintain service status --brief
+
+        - name: Verify all Capsule services are running
+          ansible.builtin.command: satellite-maintain service status
+          register: cap_service_status
+          changed_when: false
+
+
+        - name: Record per-host result for the emailed report
+          ansible.builtin.set_fact:
+            patch_report_role: capsule
+            patch_report_status: >-
+              {{ 'ok' if cap_service_status.rc == 0 and cap_api_ok | default(true) | bool
+                 else 'unhealthy' }}
+            patch_report_update_rc: "{{ cap_update.rc }}"
+            patch_report_reboot_performed: true
+            patch_report_service_status_rc: "{{ cap_service_status.rc }}"
+            patch_report_api_ok: "{{ cap_api_ok | default(omit) }}"
+
+        - name: Fail this Capsule if it came back unhealthy
+          ansible.builtin.fail:
+            msg: >-
+              Capsule finished patching but is unhealthy
+              (service status rc={{ cap_service_status.rc }},
+              api ok={{ cap_api_ok | default('not checked') }}).
+          when: cap_service_status.rc != 0 or not cap_api_ok | default(true) | bool
+
+      rescue:
+        - name: Record the failure for the report
+          ansible.builtin.set_fact:
+            patch_report_role: capsule
+            patch_report_status: failed
+            patch_report_failed_task: "{{ ansible_failed_task.name | default('unknown') }}"
+            patch_report_error: >-
+              {{ ansible_failed_result.msg
+                 | default(ansible_failed_result.stderr | default('see job output')) }}
+
+        - name: Flag the run as failed
+          ansible.builtin.set_fact:
+            patch_run_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+          become: false
+
+        - name: Stop patching further Capsules -- the report play still runs
+          ansible.builtin.meta: end_play
+
+
+- name: Render and email the patch run report
   hosts: localhost
   connection: local
+  become: false
   gather_facts: true
-  become: false
-
   vars:
-    send_email: true
-    mail_only_on_problem: false
-    smtp_host: smtp.mckesson.com
-    smtp_port: 25
-    smtp_secure: starttls       # never | starttls | ssl | try
-    smtp_username: ""           # leave empty for an unauthenticated relay
-    smtp_password: ""
-    mail_from: jorge.chavez@mckesson.com
-    mail_to:
-      - jorge.chavez@mckesson.com
-    report_file_name: "health_check_{{ ansible_date_time.iso8601_basic_short }}.html"
+    <<: *patch_vars
+    report_path: "{{ report_local_dir }}/satellite_patch_report_{{ ansible_date_time.iso8601_basic_short }}.txt"
+    report_targets: >-
+      {{ ([satellite_host] if satellite_host | default('', true) | length > 0 else [])
+         + (capsule_hosts | default([])) }}
 
   tasks:
-
-    - name: Gather every host that produced a result
-      ansible.builtin.set_fact:
-        results: >-
-          {{ (results | default([])) + [hostvars[item].svc_result] }}
-      loop: "{{ groups['linux_servers'] | default([]) }}"
-      when: hostvars[item].svc_result is defined
-      loop_control:
-        label: "{{ item }}"
-
-    - name: Nothing to report
-      ansible.builtin.debug:
-        msg: "No host produced a result - skipping the report and email."
-      when: results | default([]) | length == 0
-
-    - name: Compute totals across all hosts
-      ansible.builtin.set_fact:
-        hosts_down: >-
-          {{ results | default([])
-             | map(attribute='services')
-             | map('selectattr', 'state', 'ne', 'running')
-             | map('list') | select | list | length }}
-        total_patches: >-
-          {{ results | default([]) | map(attribute='patch_total') | map('int') | sum }}
-        total_security: >-
-          {{ results | default([]) | map(attribute='patch_security') | map('int') | sum }}
-        total_upgradable: >-
-          {{ results | default([]) | map(attribute='upgrade_total') | map('int') | sum }}
-      when: results | default([]) | length > 0
-
-    - name: Render the consolidated HTML report
-      vars:
-        hosts_list: "{{ results | default([]) }}"
-      ansible.builtin.set_fact:
-        report_html: |
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-          <meta charset="utf-8">
-          <title>Health Check - {{ hosts_list | length }} host{{ '' if hosts_list | length == 1 else 's' }}</title>
-          <style>
-            :root {
-              --bg: #f6f7f9; --card: #ffffff; --ink: #1c2024; --muted: #6b7280; --line: #e4e7eb;
-              --ok: #1a7f4b;  --ok-bg: #e7f6ee;
-              --bad: #b3261e; --bad-bg: #fdeceb;
-              --warn: #8a6100; --warn-bg: #fdf4e3;
-              --info: #1f5fa9; --info-bg: #e8f0fb;
-            }
-            * { box-sizing: border-box; }
-            body { margin: 0; padding: 32px; background: var(--bg); color: var(--ink);
-                   font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-            .wrap { max-width: 1150px; margin: 0 auto; }
-            h1 { font-size: 22px; margin: 0 0 4px; }
-            h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
-                 color: var(--muted); margin: 0; padding: 14px 18px 0; }
-            .sub { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
-            .banner { background: var(--info-bg); color: var(--info); border: 1px solid #cddff5;
-                      border-radius: 8px; padding: 9px 14px; font-size: 13px; margin-bottom: 24px; }
-            .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
-            .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-                    padding: 14px 18px; min-width: 128px; }
-            .card .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
-            .card .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-            .card.ok .n { color: var(--ok); }
-            .card.bad .n { color: var(--bad); }
-            .card.warn .n { color: var(--warn); }
-            .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-                     margin-bottom: 16px; overflow: hidden; }
-            .panel > header { padding: 12px 18px; border-bottom: 1px solid var(--line);
-                              display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-            .panel > header .name { font-weight: 600; font-size: 16px; }
-            .panel > header .meta { color: var(--muted); font-size: 12px; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { text-align: left; padding: 9px 18px; font-size: 14px; border-bottom: 1px solid var(--line); }
-            th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
-            tbody tr:last-child td { border-bottom: 0; }
-            .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-            .pill.ok { background: var(--ok-bg); color: var(--ok); }
-            .pill.bad { background: var(--bad-bg); color: var(--bad); }
-            .pill.warn { background: var(--warn-bg); color: var(--warn); }
-            code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
-            .note { padding: 10px 18px 14px; font-size: 13px; color: var(--muted); }
-            footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
-          </style>
-          </head>
-          <body>
-          <div class="wrap">
-
-            <h1>Health Check</h1>
-            <div class="sub">
-              nginx &amp; mariadb on SUSE Linux &middot;
-              {{ hosts_list | length }} host{{ '' if hosts_list | length == 1 else 's' }} &middot;
-              generated {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}
-            </div>
-            <div class="banner">
-              Read-only run. No service was started, stopped or restarted, and no package was
-              installed or upgraded - the update figures come from
-              <code>zypper update --dry-run</code> and <code>zypper patch-check</code>.
-            </div>
-
-            <div class="cards">
-              <div class="card {{ 'bad' if hosts_down | int > 0 else 'ok' }}">
-                <div class="n">{{ 'FAIL' if hosts_down | int > 0 else 'OK' }}</div>
-                <div class="l">Overall</div>
-              </div>
-              <div class="card"><div class="n">{{ hosts_list | length }}</div><div class="l">Hosts checked</div></div>
-              <div class="card {{ 'bad' if hosts_down | int > 0 else 'ok' }}">
-                <div class="n">{{ hosts_down }}</div><div class="l">Hosts with issues</div>
-              </div>
-              <div class="card warn"><div class="n">{{ total_upgradable }}</div><div class="l">Upgradable</div></div>
-              <div class="card {{ 'bad' if total_security | int > 0 else 'ok' }}">
-                <div class="n">{{ total_security }}</div><div class="l">Security patches</div>
-              </div>
-            </div>
-
-          {% for h in hosts_list %}
-          {% set down = h.services | rejectattr('state', 'equalto', 'running') | list %}
-            <section class="panel">
-              <header>
-                <span class="name">{{ h.host }}</span>
-                <span class="meta">{{ h.os }} &middot; kernel {{ h.kernel }} &middot; up {{ h.uptime_days }} d</span>
-                <span class="pill {{ 'bad' if down else 'ok' }}">{{ 'FAIL' if down else 'OK' }}</span>
-              </header>
-
-              <h3>Services</h3>
-              <table>
-                <thead>
-                  <tr><th>Service</th><th>Unit</th><th>Version</th><th>State</th><th>Boot</th><th>Port</th></tr>
-                </thead>
-                <tbody>
-                {% for s in h.services %}
-                  <tr>
-                    <td><strong>{{ s.name }}</strong></td>
-                    <td><code>{{ s.unit }}</code></td>
-                    <td><code>{{ s.version }}</code></td>
-                    <td>
-                      {% if s.state == 'running' %}<span class="pill ok">running</span>
-                      {% elif s.state == 'not-installed' %}<span class="pill bad">not installed</span>
-                      {% else %}<span class="pill bad">{{ s.state }}</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.enabled == 'enabled' %}<span class="pill ok">enabled</span>
-                      {% else %}<span class="pill warn">{{ s.enabled }}</span>{% endif %}
-                    </td>
-                    <td>
-                      {% if s.listening %}<span class="pill ok">{{ s.port }} open</span>
-                      {% else %}<span class="pill warn">{{ s.port }} closed</span>{% endif %}
-                    </td>
-                  </tr>
-                {% endfor %}
-                </tbody>
-              </table>
-
-              {% if h.checked_updates %}
-              <h3>Pending updates (simulated, not applied)</h3>
-              <table>
-                <thead><tr><th>Check</th><th>Result</th></tr></thead>
-                <tbody>
-                  <tr>
-                    <td>Repository metadata</td>
-                    <td>
-                      {% if h.refresh_ok %}<span class="pill ok">refreshed</span>
-                      {% else %}<span class="pill warn">refresh failed - figures may be stale</span>{% endif %}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Packages upgradable<br><code>zypper update --dry-run</code></td>
-                    <td>
-                      {% if h.upgrade_total | int > 0 %}<span class="pill warn">{{ h.upgrade_total }}</span>
-                      {% else %}<span class="pill ok">none</span>{% endif %}
-                      {% if h.dry_run_summary and h.dry_run_summary != 'n/a' %}<br><code>{{ h.dry_run_summary }}</code>{% endif %}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Patches needed<br><code>zypper patch-check</code></td>
-                    <td>
-                      {% if h.patch_total | int > 0 %}<span class="pill warn">{{ h.patch_total }}</span>
-                      {% else %}<span class="pill ok">none</span>{% endif %}
-                      {% if h.patch_security | int > 0 %} <span class="pill bad">{{ h.patch_security }} security</span>{% endif %}
-                      {% if h.patch_check %}<br><code>{{ h.patch_check | replace('\n', ' ') }}</code>{% endif %}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              {% else %}
-              <div class="note">Update check skipped on this host.</div>
-              {% endif %}
-
-            </section>
-          {% endfor %}
-
-            <footer>
-              Port status is checked on 127.0.0.1 only - a "closed" result can mean the service is
-              bound to another interface or a UNIX socket, not that it is down.
-              Generated by <code>check_web_db_services.yml</code>.
-            </footer>
-
-          </div>
-          </body>
-          </html>
-      when: results | default([]) | length > 0
-
-    # ---------------------------------------------------------------
-    # The report is sent as an attachment, so it has to exist as a file
-    # inside the EE. community.general.mail reads `attach` from the host
-    # running the module - localhost here.
-    # ---------------------------------------------------------------
-
-    - name: Create a temporary directory for the attachment
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: healthcheck
-      register: report_tmp
-      when: results | default([]) | length > 0
-
-    - name: Write the consolidated report to a file
-      ansible.builtin.copy:
-        dest: "{{ report_tmp.path }}/{{ report_file_name }}"
-        content: "{{ report_html }}"
-        mode: "0644"
-      when: results | default([]) | length > 0
-
-    - name: Email the consolidated report as an attachment
-      community.general.mail:
-        host: "{{ smtp_host }}"
-        port: "{{ smtp_port }}"
-        secure: "{{ smtp_secure }}"
-        username: "{{ smtp_username | default('', true) or omit }}"
-        password: "{{ smtp_password | default('', true) or omit }}"
-        from: "{{ mail_from }}"
-        to: "{{ mail_to }}"
-        subject: >-
-          [{{ 'FAIL' if hosts_down | int > 0 else 'OK' }}] Health check -
-          {{ results | length }} host{{ '' if results | length == 1 else 's' }},
-          {{ hosts_down }} with services down,
-          {{ total_patches }} patches ({{ total_security }} security)
-        subtype: html
-        charset: utf-8
-        attach:
-          - "{{ report_tmp.path }}/{{ report_file_name }}"
-        body: |
-          <p style="font:15px/1.5 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-            Health check for {{ results | length }}
-            host{{ '' if results | length == 1 else 's' }},
-            {{ ansible_date_time.date }} {{ ansible_date_time.time }} {{ ansible_date_time.tz }}.
-            The full report is attached as <strong>{{ report_file_name }}</strong>.
-          </p>
-          <table cellpadding="6" cellspacing="0" border="0"
-                 style="border-collapse:collapse;font:14px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-            <tr style="background:#f0f1f3">
-              <th align="left">Host</th><th align="left">nginx</th><th align="left">mariadb</th>
-              <th align="left">Upgradable</th><th align="left">Patches</th><th align="left">Security</th>
-            </tr>
-          {% for h in results %}
-            <tr style="border-top:1px solid #e4e7eb">
-              <td>{{ h.host }}</td>
-            {% for s in h.services %}
-              <td style="color:{{ '#1a7f4b' if s.state == 'running' else '#b3261e' }}">
-                <strong>{{ s.state }}</strong>
-              </td>
-            {% endfor %}
-              <td>{{ h.upgrade_total }}</td>
-              <td>{{ h.patch_total }}</td>
-              <td style="color:{{ '#b3261e' if h.patch_security | int > 0 else '#1a7f4b' }}">
-                <strong>{{ h.patch_security }}</strong>
-              </td>
-            </tr>
-          {% endfor %}
-          </table>
-          <p style="color:#6b7280;font:12px -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-            Read-only check - no service was restarted and no package was installed or upgraded.
-          </p>
-      when:
-        - send_email | bool
-        - results | default([]) | length > 0
-        - (not mail_only_on_problem | bool)
-          or (hosts_down | int > 0)
-          or (total_security | int > 0)
-      register: mail_result
-      failed_when: false
-
-    - name: Warn if the email could not be sent
-      ansible.builtin.debug:
-        msg: "The health check completed but the email failed: {{ mail_result.msg | default('unknown error') }}"
-      when:
-        - not (mail_result.skipped | default(false))
-        - mail_result.failed | default(false)
-          or (mail_result.msg | default('') is search('(?i)error|refused|timed out'))
-
-    - name: Remove the temporary attachment directory
+    - name: Ensure the local report directory exists
       ansible.builtin.file:
-        path: "{{ report_tmp.path }}"
-        state: absent
-      when: report_tmp.path is defined
+        path: "{{ report_local_dir }}"
+        state: directory
+        mode: "0755"
 
-# ===================================================================
-# Play 4 - exit code. After the email, so a down service is reported
-# before the job goes red.
-# ===================================================================
+    - name: Render patch report
+      ansible.builtin.copy:
+        dest: "{{ report_path }}"
+        mode: "0644"
+        content: |
+          ===============================================================================
+           RHEL Satellite / Capsule patch report
+          ===============================================================================
+           Generated : {{ ansible_date_time.iso8601 }}
+           Control   : {{ ansible_fqdn | default('localhost') }}
+           Result    : {{ 'FAILED' if patch_run_failed | default(false) | bool else 'SUCCESS' }}
+           Hosts     : {{ report_targets | length }} targeted
+          ===============================================================================
 
-- name: Evaluate service health
-  hosts: linux_servers
-  gather_facts: false
-  become: false
+          {{ 'HOST'.ljust(34) }}{{ 'ROLE'.ljust(11) }}{{ 'RESULT'.ljust(14) }}{{ 'REBOOTED'.ljust(10) }}
+          {{ '-' * 79 }}
+          {% for h in report_targets %}
+          {% set hv = hostvars[h] | default({}) %}
+          {{ h[:33].ljust(34) }}{{ (hv.patch_report_role | default('-'))[:10].ljust(11) }}{{ (hv.patch_report_status | default('not attempted') | trim)[:13].ljust(14) }}{{ ('yes' if hv.patch_report_reboot_performed | default(false) | bool else 'no').ljust(10) }}
+          {% endfor %}
 
-  vars:
-    fail_on_down: true
+          -------------------------------------------------------------------------------
+           Detail
+          -------------------------------------------------------------------------------
+          {% for h in report_targets %}
+          {% set hv = hostvars[h] | default({}) %}
 
-  tasks:
+           {{ h }} ({{ hv.patch_report_role | default('unknown role') }})
+             status              : {{ hv.patch_report_status | default('not attempted') | trim }}
+          {% if hv.patch_report_status is not defined %}
+             (never reached -- the run stopped before it, or it was skipped
+              because the Satellite did not finish healthy)
+          {% elif hv.patch_report_status | trim == 'failed' %}
+             failed task         : {{ hv.patch_report_failed_task | default('unknown') }}
+             error               : {{ hv.patch_report_error | default('see job output') | trim }}
+          {% else %}
+             update              : rc={{ hv.patch_report_update_rc | default('-') }}
+             reboot performed    : {{ 'yes' if hv.patch_report_reboot_performed | default(false) | bool else 'no' }}
+             service status      : rc={{ hv.patch_report_service_status_rc | default('-') }}
+             api check           : {{ hv.patch_report_api_ok | default('not checked') }}
+          {% endif %}
+          {% endfor %}
 
-    - name: Fail the job if a monitored service is not running
-      ansible.builtin.assert:
-        that:
-          - item.state == 'running'
-        fail_msg: >-
-          {{ item.name }} is NOT running on {{ inventory_hostname }}
-          (state={{ item.state }}) - see the emailed health check report.
-        success_msg: "{{ item.name }} is running."
-      loop: "{{ svc_result.services | default([]) }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: fail_on_down | bool
+ 
+    - name: Email patch report
+      community.general.mail:
+        host: "{{ report_email_smtp_host }}"
+        port: "{{ report_email_smtp_port }}"
+        username: "{{ report_email_smtp_username | default(omit, true) }}"
+        password: "{{ report_email_smtp_password | default(omit, true) }}"
+        secure: "{{ report_email_smtp_secure }}"
+        from: "jorge.chavez@mckesson.com"
+        to: "{{ report_email_to if report_email_to is string else report_email_to | join(',') }}"
+        subject: >-
+          [{{ 'FAILED' if patch_run_failed | default(false) | bool else 'OK' }}]
+          Satellite/Capsule patch report - {{ ansible_date_time.date }}
+        body: "{{ lookup('file', report_path) }}"
+        attach: "{{ [report_path] if report_email_attach_report | bool else omit }}"
+      when: report_email_enabled | bool
+
+    - name: Fail the run if any host failed to patch
+      ansible.builtin.fail:
+        msg: "One or more hosts failed to patch. See the report at {{ report_path }}."
+      when: patch_run_failed | default(false) | bool
