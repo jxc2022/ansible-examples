@@ -1,0 +1,161 @@
+---
+- name: Create snapshots for Azure VMs from survey input
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  collections:
+    - azure.azcollection
+
+  vars_files:
+    - azure_creds.yml
+
+
+  vars:
+    vm_list_clean: >-
+      {{
+        server_list
+        | regex_replace(',', ' ')
+        | split()
+        | list
+      }}
+
+  tasks:
+
+    - name: Authenticate Azure CLI
+      ansible.builtin.shell: |
+        az login \
+          --service-principal \
+          -u "{{ azure_client_id }}" \
+          -p "{{ azure_client_secret }}" \
+          --tenant "{{ azure_tenant_id }}"
+      changed_when: false
+
+ 
+    - name: Initialize OR list
+      set_fact:
+        or_list: []
+
+    - name: Append each VM to OR list
+      set_fact:
+        or_list: "{{ or_list + [ 'name =~ \"' + item + '\"' ] }}"
+      loop: "{{ vm_list_clean }}"
+
+    - name: Join OR expression
+      set_fact:
+        server_or_expression: "{{ or_list | join(' or ') }}"
+
+
+    - name: Build Kusto query
+      set_fact:
+        full_query: >-
+          Resources
+          | where type =~ "microsoft.compute/virtualmachines"
+          | where {{ server_or_expression }}
+          | extend osType = tostring(properties.storageProfile.osDisk.osType)
+          | project name, resourceGroup, subscriptionId, osType
+
+
+    - name: Query Azure Resource Graph
+      ansible.builtin.command: >
+        az graph query -q {{ full_query | quote }}
+      register: vm_info_raw
+
+    - name:  JSON output
+      set_fact:
+        vm_info: "{{ (vm_info_raw.stdout | from_json).data }}"
+
+ 
+    - name: Get VM details
+      azure.azcollection.azure_rm_virtualmachine_info:
+        subscription_id: "{{ vm.subscriptionId }}"
+        resource_group: "{{ vm.resourceGroup }}"
+        name: "{{ vm.name }}"
+      register: vm_details
+      loop: "{{ vm_info }}"
+      loop_control:
+        loop_var: vm
+        index_var: idx  # access list of vm info ret from azure
+
+  
+    - name: Create snapshot
+      azure.azcollection.azure_rm_snapshot:
+        subscription_id: "{{ vm.subscriptionId }}"
+        resource_group: "{{ vm.resourceGroup }}"
+        name: "{{ vm.name }}-{{ snapshot_name }}-{{ lookup('pipe','date +%Y%m%d%H%M') }}"
+        location: "{{ vm_details.results[idx].vms[0].location }}"
+        creation_data:
+          create_option: Copy
+          source_uri: "{{ vm_details.results[idx].vms[0].os_disk.managed_disk.id }}"
+      loop: "{{ vm_info }}"
+      loop_control:
+        loop_var: vm
+        index_var: idx
+      ignore_errors: true        
+
+ 
+    - name:  snapshot details
+      set_fact:
+        snapshot_table: >-
+          {{
+            (snapshot_table | default([])) + [
+              {
+                "vm": vm.name,
+                "snapshot": snapshot_name_full,
+                "region": vm_details.results[idx].vms[0].location,
+                "disk_type": vm_details.results[idx].vms[0].os_disk.managed_disk.storage_account_type,
+                "resource_group": vm.resourceGroup,
+                "subscription_id": vm.subscriptionId
+              }
+            ]
+          }}
+      vars:
+        snapshot_name_full: "{{ vm.name }}-{{ snapshot_name }}-{{ lookup('pipe','date +%Y%m%d%H%M') }}"
+      loop: "{{ vm_info }}"
+      loop_control:
+        loop_var: vm
+        index_var: idx  
+      ignore_errors: true
+
+
+    - name: Sort snapshot table
+      set_fact:
+        snapshot_table: >-
+          {{
+            snapshot_table
+            | sort(attribute='vm')
+            | sort(attribute='resource_group')
+            | sort(attribute='subscription_id')
+          }}
+      ignore_errors: true
+      
+    - name: Build CSV 
+      set_fact:
+        snapshot_csv: |
+          VM Name,Snapshot Name,Region,Disk Type,Resource Group,Subscription ID
+          {% for row in snapshot_table -%}
+          {{ row.vm }},{{ row.snapshot }},{{ row.region }},{{ row.disk_type }},{{ row.resource_group }},{{ row.subscription_id }}
+          {% endfor %}
+      ignore_errors: true
+
+    - name: Write CSV to file
+      copy:
+        dest: "/tmp/snapshot_report.csv"
+        content: "{{ snapshot_csv }}"
+      ignore_errors: true
+
+    - name: Email CSV report
+      community.general.mail:
+        host: "ndhmail.mckesson.com"
+        port: 25
+        from: "jorge.chavez@mckesson.com"
+        to:
+          - " {{ recipient }} "
+        subject: "Azure Snapshot Report"
+        body: |
+          Hello,
+
+          Your Azure VM snapshot report is attached.
+
+        attach:
+          - "/tmp/snapshot_report.csv"
+      ignore_errors: true
