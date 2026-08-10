@@ -33,12 +33,12 @@
     report_local_dir: /tmp/reports
     report_email_enabled: true
     report_email_attach_report: true
-    report_email_smtp_host: smtp.mckesson.com
+    report_email_smtp_host: smtp.yellow.com
     report_email_smtp_port: 25
     report_email_smtp_secure: starttls      # never | starttls | ssl | try
-    report_email_from: jorge.chavez@mckesson.com
+    report_email_from: jorge.chavez@yellow.com
     report_email_to:
-      - jorge.chavez@mckesson.com
+      - jorge.chavez@yellow.com
 
   tasks:
 

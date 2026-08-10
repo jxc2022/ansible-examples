@@ -1,4 +1,4 @@
-ping cimsdev01-scan.mckesson.com
+ping cimsdev01-scan.yellow.com
 PING cimsdev01-wteex-scan.ocisbcimsoracl.ocivnetwestusm.oraclevcn.com (10.29.95.175) 56(84) bytes of data.
 64 bytes from 10.29.95.175 (10.29.95.175): icmp_seq=1 ttl=60 time=2.58 ms
 64 bytes from 10.29.95.175 (10.29.95.175): icmp_seq=2 ttl=60 time=2.20 ms
@@ -27,7 +27,7 @@ import oracledb
 # -----------------------------
 # EDIT THESE VALUES "HOST:PORT/SERVICE"
 # -----------------------------
-dsn = "cimsdev01-scan.mckesson.com:1521/ECSQA.ocisbcimsoracl.ocivnetwestusm.oraclevcn.com";     # Example: "10.10.10.5:1521/ORCL"
+dsn = "cimsdev01-scan.yellow.com:1521/ECSQA.ocisbcimsoracl.ocivnetwestusm.oraclevcn.com";     # Example: "10.10.10.5:1521/ORCL"
 username = "ssctt1i"
 password = "asdf#"
 # -----------------------------
