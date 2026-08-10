@@ -516,10 +516,10 @@
     # ----------------------------------------------------------
     - name: Send report email
       community.general.mail:
-        host: "ndhmail.mckesson.com"
+        host: "ndhmail.yellow.com"
         port: 25
         to: "{{ recipient }}"
-        from: "jorge.chavez@mckesson.com"
+        from: "jorge.chavez@yellow.com"
         subject:  "Audit Report — {{ Change_Number }} — {{ total_hosts }} hosts — {{ audit_commands_list | length }} commands — {{ run_ts }}"
         body: |
           Ansible audit report across {{ total_hosts }} host(s).

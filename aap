@@ -98,10 +98,10 @@
     report_file: "/tmp/prod_aap.html"
     html_file_path: "/tmp/prod_aap.html"
     recipient:
-      - "jorge.chavez@mckesson.com"
-      - "michael.ray@mckesson.com"
-      - "ramesh.musunuri@mckesson.com"
-      - "samarjeet.sethi@mckesson.com"
+      - "jorge.chavez@yellow.com"
+      - "michael.ray@yellow.com"
+      - "ramesh.musunuri@yellow.com"
+      - "samarjeet.sethi@yellow.com"
 
   tasks:
 
@@ -122,9 +122,9 @@
 
     - name: Send Email Notifications
       community.general.mail:
-        host: "ndhmail.mckesson.com"
+        host: "ndhmail.yellow.com"
         port: 25
-        from: "jorge.chavez@mckesson.com"
+        from: "jorge.chavez@yellow.com"
         to: "{{ recipient }}"
         subject: "AAP Prod Health Check"
         body: "AAP Prod Health Check"
