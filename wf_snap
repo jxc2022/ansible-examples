@@ -11,13 +11,19 @@
 
 
   vars:
-    vm_list_clean: >-
-      {{
-        server_list
-        | regex_replace(',', ' ')
-        | split()
-        | list
-      }}
+    mail_to:
+      - "jorge.chavez@mckesson.com"
+      - "Prasad.Murthy@McKesson.com"
+      - "Eknath.pawar@mckesson.com"
+      - "Malliswari.S@McKesson.com"
+     
+
+    vm_list_clean: 
+      - epmcapcmo3p01.ca.hq.medisna.com
+      - epmcapmddcp01.oc.mckesson.com
+      - epmcapuddcp01.na.corp.mckesson.com
+      - epmcapazp01.na.corp.mckesson.com
+      - epmsatmddcp01.oc.mckesson.com
 
   tasks:
 
@@ -148,14 +154,15 @@
         host: "ndhmail.mckesson.com"
         port: 25
         from: "jorge.chavez@mckesson.com"
-        to:
-          - " {{ recipient }} "
+        to: "{{ mail_to | join(',') }}"
         subject: "Azure Snapshot Report"
         body: |
           Hello,
 
-          Your Azure VM snapshot report is attached.
+          Azure VM snapshot for Prod Sat and Capsules:
+          "{{ server_list }}".
 
         attach:
           - "/tmp/snapshot_report.csv"
       ignore_errors: true
+
