@@ -3,3 +3,29 @@
   hosts: localhost
   connection: local
  
+#!/bin/bash
+# usage: ./del-hosts.sh hosts.txt [--execute]
+FILE="$1"
+LOG="delete-$(date +%Y%m%d-%H%M%S).csv"
+echo "fqdn,id,status" > "$LOG"
+
+while read -r F; do
+  ID=$(hammer --no-headers --csv host list --search "name = \"$F\"" --fields id | head -1)
+
+  if ! [[ "$ID" =~ ^[0-9]+$ ]]; then
+    echo "$F  NOT FOUND"; echo "$F,,not_found" >> "$LOG"; continue
+  fi
+
+  if [[ "$2" != "--execute" ]]; then
+    echo "$F  would delete (id=$ID)"; echo "$F,$ID,would_delete" >> "$LOG"; continue
+  fi
+
+  if hammer host delete --id "$ID" >/dev/null 2>&1; then
+    echo "$F  DELETED"; echo "$F,$ID,deleted" >> "$LOG"
+  else
+    echo "$F  FAILED"; echo "$F,$ID,failed" >> "$LOG"
+  fi
+done < <(tr -d ' \r' < "$FILE" | grep -v '^$' | sort -u)
+
+echo; echo "log: $LOG"
+grep -c ,deleted "$LOG"
