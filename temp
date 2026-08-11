@@ -30,3 +30,9 @@ export PS1="[\u@\h \W]\$ "
 
 TERM=xterm script -qec 'ssh -tt <cpm_account>@localhost' /tmp/o.raw
 cat -v /tmp/o.raw | head -5
+
+
+getent passwd <account>
+grep -iE 'prompt|password' /etc/sssd/sssd.conf
+authselect current
+rpm -q sssd
