@@ -50,3 +50,5 @@ Enabled features:
 [root@minastirith sev6xnc]# rpm -q sssd
 sssd-2.9.8-4.el9_8.1.x86_64
 
+grep -rn 'Utility' /etc/ 2>/dev/null
+grep -rln $'\033]' /etc/profile /etc/profile.d/ /etc/bashrc /etc/sysconfig/bash-prompt-* /home/cnd8dyh/.bash* 2>/dev/null
