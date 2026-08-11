@@ -27,3 +27,6 @@ Put these 2 lines in their place:
 bash
 unset PROMPT_COMMAND
 export PS1="[\u@\h \W]\$ "
+
+TERM=xterm script -qec 'ssh -tt <cpm_account>@localhost' /tmp/o.raw
+cat -v /tmp/o.raw | head -5
