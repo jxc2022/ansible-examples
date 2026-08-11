@@ -3,3 +3,27 @@
         "discovered_interpreter_python": "/usr/bin/python3.11"
     },
     "changed": false
+
+
+File: ~/.bashrc
+
+Delete these 11 lines:
+
+bash
+# Prevent window titles for non-interactive or automation tools
+if [ "$TERM" = "dumb" ] || [ -z "$PS1" ]; then
+    unset PROMPT_COMMAND
+else
+    # Keep standard prompt logic only for real humans logging in
+    export PS1="[\u@\h \W]\$ "
+fi
+
+if set -o | grep -q multiline; then
+    set +o multiline
+fi
+
+Put these 2 lines in their place:
+
+bash
+unset PROMPT_COMMAND
+export PS1="[\u@\h \W]\$ "
