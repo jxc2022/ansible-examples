@@ -36,3 +36,17 @@ getent passwd <account>
 grep -iE 'prompt|password' /etc/sssd/sssd.conf
 authselect current
 rpm -q sssd
+
+
+[root@minastirith sev6xnc]# getent passwd cnd8dyh
+cnd8dyh:*:16997:5142:Cyberark Reconciliation ~:/home/cnd8dyh:/bin/bash
+[root@minastirith sev6xnc]# grep -iE 'prompt|password' /etc/sssd/sssd.conf
+  krb5_store_password_if_offline = true
+[root@minastirith sev6xnc]# authselect current
+Profile ID: sssd
+Enabled features:
+- with-mkhomedir
+- with-pamaccess
+[root@minastirith sev6xnc]# rpm -q sssd
+sssd-2.9.8-4.el9_8.1.x86_64
+
