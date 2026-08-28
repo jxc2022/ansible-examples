@@ -6,15 +6,17 @@
 
   vars: &patch_vars
 
- 
-    # PROD (6 nodes) -- comment out the dev block above and use something like:
     aap_nodes:
-      - { host: "aapexec01.molly.lab", role: execution }
-      - { host: "aaphub01.molly.lab",  role: hub }
-      - { host: "aapeda01.molly.lab",  role: eda }
-      - { host: "aapctl01.molly.lab",  role: controller }
-      - { host: "aapctl02.molly.lab",  role: controller }
-      - { host: "aapdb01.molly.lab",   role: database }
+      - { host: "aap.molly.lab", role: controller }
+
+    # PROD (6 nodes) -- comment out the dev block above and use something like:
+    # aap_nodes:
+    #   - { host: "aapexec01.molly.lab", role: execution }
+    #   - { host: "aaphub01.molly.lab",  role: hub }
+    #   - { host: "aapeda01.molly.lab",  role: eda }
+    #   - { host: "aapctl01.molly.lab",  role: controller }
+    #   - { host: "aapctl02.molly.lab",  role: controller }
+    #   - { host: "aapdb01.molly.lab",   role: database }
 
     aap_role_order:
       execution: 10
