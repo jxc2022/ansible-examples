@@ -1,0 +1,518 @@
+---
+# =============================================================================
+# OS patching for containerized Ansible Automation Platform 2.6
+#
+# Per node: drain it from the controller instance pool, dnf update, reboot,
+# put it back. That is the whole flow.
+#
+# This patches the RHEL hosts underneath AAP. It does NOT upgrade AAP itself --
+# in a containerized deployment the platform ships as container images, so dnf
+# never touches it. Upgrading AAP is a separate job: new setup bundle,
+# ansible.containerized_installer, per the Red Hat upgrade procedure.
+#
+# Order is driven by the `role` on each node, not by inventory order:
+#   execution -> hub -> eda -> controller/gateway -> allinone -> database
+# One node at a time, serial: 1. The database goes last, because rebooting it
+# interrupts every other node.
+# =============================================================================
+
+- name: Build the AAP patch order from the hardcoded vars
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars: &patch_vars
+
+    PROD (6 nodes) -- comment out the dev block above and use something like:
+    aap_nodes:
+      - { host: "aapexec01.molly.lab", role: execution }
+      - { host: "aaphub01.molly.lab",  role: hub }
+      - { host: "aapeda01.molly.lab",  role: eda }
+      - { host: "aapctl01.molly.lab",  role: controller }
+      - { host: "aapctl02.molly.lab",  role: controller }
+      - { host: "aapdb01.molly.lab",   role: database }
+
+    # Lower number = patched earlier.
+    aap_role_order:
+      execution: 10
+      hub: 20
+      eda: 30
+      controller: 40
+      gateway: 45
+      allinone: 50
+      database: 90
+
+
+    # --- Platform ------------------------------------------------------------
+    # Point this at the environment being PATCHED, not the one running the job.
+    # In prod use the gateway VIP, not an individual controller.
+    aap_gateway_url: "https://aap.molly.lab"
+    aap_validate_certs: false
+
+    # --- Patching ------------------------------------------------------------
+    # Every patched node is rebooted unconditionally after patching.
+    aap_reboot_timeout: 900
+    aap_reboot_connect_timeout: 5
+    aap_reboot_reconnect_delay: 30
+
+    # --- Draining ------------------------------------------------------------
+    # Take the node out of the controller instance pool and wait for its
+    # running jobs to finish before rebooting it.
+    #
+    # Token: never hardcode it here. Use one of
+    #   export AAP_TOKEN='...'
+    #   -e @aap_secret.yml --ask-vault-pass
+    #   AAP: a custom credential type that injects AAP_TOKEN
+    aap_token: "{{ lookup('env', 'AAP_TOKEN') | default('', true) }}"
+    aap_drain_enabled: true
+    aap_drain_roles: ["execution", "controller", "allinone"]
+    aap_drain_timeout: 1800          # seconds to wait for jobs to finish
+    aap_drain_poll_interval: 15
+
+    # --- Report --------------------------------------------------------------
+    # Runs inside the execution environment, so this path is ephemeral --
+    # the emailed attachment is the copy that survives the job.
+    report_local_dir: "/tmp/reports"
+    recipient: "jorge.x.chavez@gmail.com"
+    gmail_user: "jorge.x.chavez@gmail.com"
+
+    # Gmail app password -- NOT hardcoded. Supply it one of these ways:
+    #   export GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx'
+    #   -e @gmail_secret.yml --ask-vault-pass
+    #   AAP: a custom credential type that injects GMAIL_APP_PASSWORD
+    gmail_password: "{{ lookup('env', 'GMAIL_APP_PASSWORD') | default('', true) }}"
+
+    report_email_enabled: true
+    report_email_smtp_host: "smtp.gmail.com"
+    report_email_smtp_port: 587
+    report_email_smtp_secure: "starttls"   # never | starttls | ssl | try
+    report_email_smtp_username: "{{ gmail_user }}"
+    report_email_smtp_password: "{{ gmail_password }}"
+    report_email_from: "{{ gmail_user }}"
+    report_email_to: "{{ recipient }}"
+    report_email_attach_report: true
+
+  tasks:
+    - name: Sanity-check the targets
+      ansible.builtin.assert:
+        that:
+          - aap_nodes | default([]) | length > 0
+          - aap_nodes | map(attribute='host') | list | length ==
+            aap_nodes | map(attribute='host') | unique | list | length
+          - aap_nodes | map(attribute='role') | reject('in', aap_role_order.keys() | list) | list | length == 0
+        fail_msg: >-
+          Bad targets. Need at least one node, no duplicate hosts, and every
+          role must be one of {{ aap_role_order.keys() | list | join(', ') }}.
+          nodes={{ aap_nodes }}
+        quiet: true
+
+    - name: Attach an order weight to each node
+      ansible.builtin.set_fact:
+        aap_nodes_weighted: >-
+          {{ aap_nodes_weighted | default([])
+             + [ item | combine({'weight': aap_role_order[item.role]}) ] }}
+      loop: "{{ aap_nodes }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.role }})"
+
+    - name: Sort the nodes into patch order
+      ansible.builtin.set_fact:
+        aap_nodes_ordered: "{{ aap_nodes_weighted | sort(attribute='weight') }}"
+
+    # add_host preserves the order it is called in, and serial: 1 walks the
+    # group in that order, so this is what actually sequences the run.
+    - name: Add the nodes to the patch group in order
+      ansible.builtin.add_host:
+        name: "{{ item.host }}"
+        groups:
+          - aap_patch
+        node_role: "{{ item.role }}"
+      loop: "{{ aap_nodes_ordered }}"
+      loop_control:
+        label: "{{ item.host }} ({{ item.role }})"
+      when: item.host not in aap_exclude_hosts | default([])
+      changed_when: false
+
+    - name: Show the patch order
+      ansible.builtin.debug:
+        msg: >-
+          Patch order:
+          {{ aap_nodes_ordered | rejectattr('host', 'in', aap_exclude_hosts | default([]))
+             | map(attribute='host') | join('  ->  ') }}
+
+    - name: Show what is being skipped
+      ansible.builtin.debug:
+        msg: >-
+          NOT patched by this job (excluded): {{ aap_exclude_hosts | join(', ') }}.
+      when: aap_exclude_hosts | default([]) | length > 0
+
+    - name: Fail if nothing is left to patch
+      ansible.builtin.assert:
+        that:
+          - aap_nodes_ordered | rejectattr('host', 'in', aap_exclude_hosts | default([])) | list | length > 0
+        fail_msg: >-
+          Every node in aap_nodes is in aap_exclude_hosts -- there is nothing
+          for this job to patch.
+        quiet: true
+
+    - name: Warn if draining is on but no token was supplied
+      ansible.builtin.debug:
+        msg: >-
+          aap_drain_enabled is true but AAP_TOKEN is empty. Nodes will be
+          patched WITHOUT being drained -- running jobs on a rebooted node
+          will fail.
+      when:
+        - aap_drain_enabled | bool
+        - aap_token | default('', true) | length == 0
+
+    - name: Seed the run-level status flags
+      ansible.builtin.set_fact:
+        patch_run_failed: false
+
+
+# =============================================================================
+# Drain, patch, reboot, undrain. One node at a time, in the order built above.
+# =============================================================================
+- name: Patch the AAP nodes one at a time
+  hosts: aap_patch
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  gather_facts: true
+  vars:
+    <<: *patch_vars
+    aap_drain_this_node: >-
+      {{ aap_drain_enabled | bool
+         and node_role in aap_drain_roles
+         and aap_token | default('', true) | length > 0 }}
+
+  tasks:
+    - name: Patch this node
+      block:
+
+        # ------------------------------------------------------------------
+        # Drain
+        # ------------------------------------------------------------------
+        - name: Find this node's controller instance
+          ansible.builtin.uri:
+            url: "{{ aap_gateway_url }}/api/controller/v2/instances/?hostname={{ inventory_hostname }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            validate_certs: "{{ aap_validate_certs }}"
+            status_code: 200
+            timeout: 30
+          delegate_to: localhost
+          become: false
+          no_log: true
+          register: instance_lookup
+          when: aap_drain_this_node | bool
+
+        - name: Note the instance id
+          ansible.builtin.set_fact:
+            aap_instance_id: "{{ instance_lookup.json.results[0].id | default('') }}"
+          when: aap_drain_this_node | bool
+
+        - name: Take this node out of the instance pool
+          ansible.builtin.uri:
+            url: "{{ aap_gateway_url }}/api/controller/v2/instances/{{ aap_instance_id }}/"
+            method: PATCH
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            body_format: json
+            body:
+              enabled: false
+            validate_certs: "{{ aap_validate_certs }}"
+            status_code: 200
+            timeout: 30
+          delegate_to: localhost
+          become: false
+          no_log: true
+          register: instance_disabled
+          when:
+            - aap_drain_this_node | bool
+            - aap_instance_id | default('', true) | length > 0
+
+        - name: Wait for this node's running jobs to finish
+          ansible.builtin.uri:
+            url: "{{ aap_gateway_url }}/api/controller/v2/instances/{{ aap_instance_id }}/"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            validate_certs: "{{ aap_validate_certs }}"
+            status_code: 200
+            timeout: 30
+          delegate_to: localhost
+          become: false
+          no_log: true
+          register: instance_state
+          until: instance_state.json.jobs_running | default(0) | int == 0
+          retries: "{{ (aap_drain_timeout | int / aap_drain_poll_interval | int) | round | int }}"
+          delay: "{{ aap_drain_poll_interval }}"
+          when:
+            - aap_drain_this_node | bool
+            - aap_instance_id | default('', true) | length > 0
+
+        # ------------------------------------------------------------------
+        # PRE-UPDATE API CHECKS GO HERE
+        #
+        # Anything that fails here aborts before any package is touched on
+        # this node. Earlier nodes stay patched; this one is untouched.
+        # ------------------------------------------------------------------
+
+        - name: Check for available package updates
+          ansible.builtin.command: "dnf -q check-update"
+          register: dnf_check
+          changed_when: false
+          failed_when: dnf_check.rc not in [0, 100]
+
+        - name: Show available updates
+          ansible.builtin.debug:
+            var: dnf_check.stdout_lines
+
+        # Base-OS packages only. The AAP containers are untouched by this --
+        # they come back on the same image tags after the reboot.
+        - name: Apply operating system package updates
+          ansible.builtin.dnf:
+            name: "*"
+            state: latest
+            update_cache: true
+          register: pkg_update
+
+        - name: Record how many packages changed
+          ansible.builtin.set_fact:
+            pkg_changed_count: "{{ pkg_update.results | default([]) | length }}"
+
+        - name: Show patch output
+          ansible.builtin.debug:
+            var: pkg_update.results
+
+        - name: Reboot the node
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ aap_reboot_timeout }}"
+            connect_timeout: "{{ aap_reboot_connect_timeout }}"
+            pre_reboot_delay: 5
+            post_reboot_delay: "{{ aap_reboot_reconnect_delay }}"
+            test_command: "systemctl is-system-running --wait || true"
+
+        # ------------------------------------------------------------------
+        # POST-UPDATE API CHECKS GO HERE
+        #
+        # Set aap_api_ok (true/false) from whatever you check, so the report
+        # picks it up. Default true means "no check configured" rather than
+        # "failed".
+        # ------------------------------------------------------------------
+
+        - name: Put this node back into the instance pool
+          ansible.builtin.uri:
+            url: "{{ aap_gateway_url }}/api/controller/v2/instances/{{ aap_instance_id }}/"
+            method: PATCH
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            body_format: json
+            body:
+              enabled: true
+            validate_certs: "{{ aap_validate_certs }}"
+            status_code: 200
+            timeout: 30
+          delegate_to: localhost
+          become: false
+          no_log: true
+          when:
+            - aap_drain_this_node | bool
+            - instance_disabled is not skipped
+
+        - name: Record per-host result for the emailed report
+          ansible.builtin.set_fact:
+            patch_report_role: "{{ node_role }}"
+            patch_report_status: "{{ 'ok' if aap_api_ok | default(true) | bool else 'unhealthy' }}"
+            patch_report_packages: "{{ pkg_changed_count | default(0) }}"
+            patch_report_reboot_performed: true
+            patch_report_drained: "{{ aap_drain_this_node | bool }}"
+            patch_report_api_ok: "{{ aap_api_ok | default(omit) }}"
+
+        - name: Fail this node if a post-update check failed
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }} finished patching but a post-update
+              check failed (api ok={{ aap_api_ok | default('not checked') }}).
+          when: not aap_api_ok | default(true) | bool
+
+      rescue:
+        - name: Record the failure for the report
+          ansible.builtin.set_fact:
+            patch_report_role: "{{ node_role }}"
+            patch_report_status: failed
+            patch_report_failed_task: "{{ ansible_failed_task.name | default('unknown') }}"
+            patch_report_error: >-
+              {{ ansible_failed_result.msg
+                 | default(ansible_failed_result.stderr | default('see job output')) }}
+            patch_report_packages: "{{ pkg_changed_count | default(0) }}"
+            patch_report_drained: "{{ aap_drain_this_node | bool }}"
+
+        - name: Try to put the node back into the instance pool
+          ansible.builtin.uri:
+            url: "{{ aap_gateway_url }}/api/controller/v2/instances/{{ aap_instance_id }}/"
+            method: PATCH
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            body_format: json
+            body:
+              enabled: true
+            validate_certs: "{{ aap_validate_certs }}"
+            status_code: 200
+            timeout: 30
+          delegate_to: localhost
+          become: false
+          no_log: true
+          failed_when: false
+          when:
+            - aap_drain_this_node | bool
+            - instance_disabled is defined
+            - instance_disabled is not skipped
+
+        - name: Flag the run as failed
+          ansible.builtin.set_fact:
+            patch_run_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+          become: false
+
+        - name: Stop patching further nodes -- the report play still runs
+          ansible.builtin.meta: end_play
+
+
+# =============================================================================
+- name: Render and email the patch run report
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  vars:
+    <<: *patch_vars
+    report_path: "{{ report_local_dir }}/aap_patch_report_{{ ansible_date_time.iso8601_basic_short }}.txt"
+    report_targets: "{{ groups['aap_patch'] | default([]) }}"
+
+  tasks:
+    - name: Ensure the local report directory exists
+      ansible.builtin.file:
+        path: "{{ report_local_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Collect the final cluster state
+      ansible.builtin.uri:
+        url: "{{ aap_gateway_url }}/api/controller/v2/ping/"
+        method: GET
+        validate_certs: "{{ aap_validate_certs }}"
+        status_code: 200
+        timeout: 30
+      register: ping_final
+      failed_when: false
+
+    # copy's `content` is templated, so the report body lives inline here
+    # instead of in a templates/ directory.
+    - name: Render patch report
+      ansible.builtin.copy:
+        dest: "{{ report_path }}"
+        mode: "0644"
+        content: |
+          ===============================================================================
+           Ansible Automation Platform 2.6 -- OS patch report
+          ===============================================================================
+           Generated : {{ ansible_date_time.iso8601 }}
+           Control   : {{ ansible_fqdn | default('localhost') }}
+           Result    : {{ 'FAILED' if patch_run_failed | default(false) | bool else 'SUCCESS' }}
+           Nodes     : {{ report_targets | length }} targeted
+          {% if aap_exclude_hosts | default([]) | length > 0 %}
+           Excluded  : {{ aap_exclude_hosts | join(', ') }} (NOT patched)
+          {% endif %}
+           Mode      : drain + dnf update + reboot
+          ===============================================================================
+
+          {{ 'HOST'.ljust(32) }}{{ 'ROLE'.ljust(12) }}{{ 'RESULT'.ljust(15) }}{{ 'PKGS'.ljust(8) }}{{ 'DRAINED'.ljust(8) }}
+          {{ '-' * 79 }}
+          {% for h in report_targets %}
+          {% set hv = hostvars[h] | default({}) %}
+          {{ h[:31].ljust(32) }}{{ (hv.patch_report_role | default('-'))[:11].ljust(12) }}{{ (hv.patch_report_status | default('not attempted') | trim)[:14].ljust(15) }}{{ (hv.patch_report_packages | default('-') | string).ljust(8) }}{{ ('yes' if hv.patch_report_drained | default(false) | bool else 'no').ljust(8) }}
+          {% endfor %}
+
+          -------------------------------------------------------------------------------
+           Detail
+          -------------------------------------------------------------------------------
+          {% for h in report_targets %}
+          {% set hv = hostvars[h] | default({}) %}
+
+           {{ h }} ({{ hv.patch_report_role | default('unknown role') }})
+             status              : {{ hv.patch_report_status | default('not attempted') | trim }}
+          {% if hv.patch_report_status is not defined %}
+             (never reached -- the run stopped before it)
+          {% elif hv.patch_report_status | trim == 'failed' %}
+             failed task         : {{ hv.patch_report_failed_task | default('unknown') }}
+             error               : {{ hv.patch_report_error | default('see job output') | trim }}
+             packages changed    : {{ hv.patch_report_packages | default('-') }}
+             drained first       : {{ 'yes' if hv.patch_report_drained | default(false) | bool else 'no' }}
+          {% else %}
+             packages changed    : {{ hv.patch_report_packages | default('-') }}
+             reboot performed    : yes
+             drained first       : {{ 'yes' if hv.patch_report_drained | default(false) | bool else 'no' }}
+             api check           : {{ hv.patch_report_api_ok | default('not checked') }}
+          {% endif %}
+          {% endfor %}
+
+          -------------------------------------------------------------------------------
+           Cluster state after the run
+          -------------------------------------------------------------------------------
+          {% if ping_final.status | default(0) == 200 %}
+           Controller instances online:
+          {% for i in ping_final.json.instances | default([]) %}
+             {{ i.node }}  type={{ i.node_type | default('-') }}  capacity={{ i.capacity | default('-') }}  heartbeat={{ i.heartbeat | default('-') }}
+          {% endfor %}
+          {% else %}
+           Could not reach {{ aap_gateway_url }}/api/controller/v2/ping/ (status
+           {{ ping_final.status | default('no response') }}). Check the platform before
+           closing out the change.
+          {% endif %}
+
+          -------------------------------------------------------------------------------
+           This run patched the RHEL hosts only. AAP itself is unchanged -- the container
+           images are the same tags as before. A node missing from the instance list
+           above is worth a look even where the overall result is SUCCESS.
+          -------------------------------------------------------------------------------
+
+    - name: Show patch report
+      ansible.builtin.debug:
+        msg: "{{ lookup('file', report_path).split('\n') }}"
+
+    - name: Fail early if email is on but no app password was supplied
+      ansible.builtin.assert:
+        that:
+          - report_email_smtp_password | default('', true) | length > 0
+        fail_msg: >-
+          report_email_enabled is true but no SMTP password was found.
+          Set GMAIL_APP_PASSWORD in the environment, or pass
+          -e gmail_password=... from a vaulted file / AAP credential.
+        quiet: true
+      when: report_email_enabled | bool
+
+    - name: Email patch report
+      no_log: true          # keeps the app password out of job output
+      community.general.mail:
+        host: "{{ report_email_smtp_host }}"
+        port: "{{ report_email_smtp_port }}"
+        username: "{{ report_email_smtp_username | default(omit, true) }}"
+        password: "{{ report_email_smtp_password | default(omit, true) }}"
+        secure: "{{ report_email_smtp_secure }}"
+        from: "{{ report_email_from }}"
+        to: "{{ report_email_to if report_email_to is string else report_email_to | join(',') }}"
+        subject: >-
+          [{{ 'FAILED' if patch_run_failed | default(false) | bool else 'OK' }}]
+          AAP patch report - {{ ansible_date_time.date }}
+        body: "{{ lookup('file', report_path) }}"
+        attach: "{{ [report_path] if report_email_attach_report | bool else omit }}"
+      when: report_email_enabled | bool
+
+    - name: Fail the run if any node failed to patch
+      ansible.builtin.fail:
+        msg: "One or more nodes failed to patch. See the report at {{ report_path }}."
+      when: patch_run_failed | default(false) | bool
