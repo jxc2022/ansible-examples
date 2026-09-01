@@ -1,5 +1,90 @@
 curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
   https://aohub-aap-uat.yellow.com/api/controller/v2/ping/ | python3 -m json.tool
+
+"ha": true,
+    "version": "4.7.10",
+    "active_node": "azaohaacu02.na.corp.yellow.com",
+    "install_uuid": "ba61482a-a9af-4a41-9d62-b9fdac6ec649",
+    "instances": [
+        {
+            "node": "azaohaacu01.na.corp.yellow.com",
+            "node_type": "hybrid",
+            "uuid": "850ba3b5-c481-4336-9539-9d1cf7cdc385",
+            "heartbeat": "2026-09-01T15:58:33.215874Z",
+            "capacity": 136,
+            "version": "4.7.10"
+        },
+        {
+            "node": "azaohaacu02.na.corp.yellow.com",
+            "node_type": "hybrid",
+            "uuid": "d7724ff0-945c-4dc2-b157-e0450d0cea66",
+            "heartbeat": "2026-09-01T15:58:35.708514Z",
+            "capacity": 136,
+            "version": "4.7.10"
+        },
+        {
+            "node": "azaohaenu01.na.corp.yellow.com",
+            "node_type": "execution",
+            "uuid": "f7a8d0fa-564c-465a-96e6-716904b5127a",
+            "heartbeat": "2026-09-01T15:57:45.600537Z",
+            "capacity": 136,
+            "version": "ansible-runner-2.4.3"
+        },
+        {
+            "node": "azaohaenu02.na.corp.yellow.com",
+            "node_type": "execution",
+            "uuid": "ad43eb1b-c035-49f5-b14b-6d56eeeb41df",
+            "heartbeat": "2026-09-01T15:57:43.076709Z",
+            "capacity": 136,
+            "version": "ansible-runner-2.4.3"
+        },
+        {
+            "node": "epmaaecmo3n01.ca.hq.yellow.com",
+            "node_type": "execution",
+            "uuid": "a58db638-2d30-4378-9cd2-84912149070b",
+            "heartbeat": "2026-09-01T15:58:13.880371Z",
+            "capacity": 135,
+            "version": "ansible-runner-2.4.3"
+        }
+    ],
+    "instance_groups": [
+        {
+            "name": "Canada On-prem",
+            "capacity": 135,
+            "instances": [
+                "epmaaecmo3n01.ca.hq.yellow.com"
+            ]
+        },
+        {
+            "name": "controlplane",
+            "capacity": 272,
+            "instances": [
+                "azaohaacu01.na.corp.yellow.com",
+                "azaohaacu02.na.corp.yellow.com"
+            ]
+        },
+        {
+            "name": "default",
+            "capacity": 679,
+            "instances": [
+                "azaohaacu01.na.corp.yellow.com",
+                "azaohaacu02.na.corp.yellow.com",
+                "azaohaenu01.na.corp.yellow.com",
+                "azaohaenu02.na.corp.yellow.com",
+                "epmaaecmo3n01.ca.hq.yellow.com"
+            ]
+        },
+        {
+            "name": "executionplane",
+            "capacity": 407,
+            "instances": [
+                "azaohaenu01.na.corp.yellow.com",
+                "azaohaenu02.na.corp.yellow.com",
+                "epmaaecmo3n01.ca.hq.yellow.com"
+            ]
+        }
+    ]
+
 ---
 - name: patch aap nprod 
   hosts: localhost
