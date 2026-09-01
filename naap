@@ -1,92 +1,5 @@
-curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
-  https://aohub-aap-uat.yellow.com/api/controller/v2/ping/ | python3 -m json.tool
-
-"ha": true,
-    "version": "4.7.10",
-    "active_node": "azaohaacu02.na.corp.yellow.com",
-    "install_uuid": "ba61482a-a9af-4a41-9d62-b9fdac6ec649",
-    "instances": [
-        {
-            "node": "azaohaacu01.na.corp.yellow.com",
-            "node_type": "hybrid",
-            "uuid": "850ba3b5-c481-4336-9539-9d1cf7cdc385",
-            "heartbeat": "2026-09-01T15:58:33.215874Z",
-            "capacity": 136,
-            "version": "4.7.10"
-        },
-        {
-            "node": "azaohaacu02.na.corp.yellow.com",
-            "node_type": "hybrid",
-            "uuid": "d7724ff0-945c-4dc2-b157-e0450d0cea66",
-            "heartbeat": "2026-09-01T15:58:35.708514Z",
-            "capacity": 136,
-            "version": "4.7.10"
-        },
-        {
-            "node": "azaohaenu01.na.corp.yellow.com",
-            "node_type": "execution",
-            "uuid": "f7a8d0fa-564c-465a-96e6-716904b5127a",
-            "heartbeat": "2026-09-01T15:57:45.600537Z",
-            "capacity": 136,
-            "version": "ansible-runner-2.4.3"
-        },
-        {
-            "node": "azaohaenu02.na.corp.yellow.com",
-            "node_type": "execution",
-            "uuid": "ad43eb1b-c035-49f5-b14b-6d56eeeb41df",
-            "heartbeat": "2026-09-01T15:57:43.076709Z",
-            "capacity": 136,
-            "version": "ansible-runner-2.4.3"
-        },
-        {
-            "node": "epmaaecmo3n01.ca.hq.yellow.com",
-            "node_type": "execution",
-            "uuid": "a58db638-2d30-4378-9cd2-84912149070b",
-            "heartbeat": "2026-09-01T15:58:13.880371Z",
-            "capacity": 135,
-            "version": "ansible-runner-2.4.3"
-        }
-    ],
-    "instance_groups": [
-        {
-            "name": "Canada On-prem",
-            "capacity": 135,
-            "instances": [
-                "epmaaecmo3n01.ca.hq.yellow.com"
-            ]
-        },
-        {
-            "name": "controlplane",
-            "capacity": 272,
-            "instances": [
-                "azaohaacu01.na.corp.yellow.com",
-                "azaohaacu02.na.corp.yellow.com"
-            ]
-        },
-        {
-            "name": "default",
-            "capacity": 679,
-            "instances": [
-                "azaohaacu01.na.corp.yellow.com",
-                "azaohaacu02.na.corp.yellow.com",
-                "azaohaenu01.na.corp.yellow.com",
-                "azaohaenu02.na.corp.yellow.com",
-                "epmaaecmo3n01.ca.hq.yellow.com"
-            ]
-        },
-        {
-            "name": "executionplane",
-            "capacity": 407,
-            "instances": [
-                "azaohaenu01.na.corp.yellow.com",
-                "azaohaenu02.na.corp.yellow.com",
-                "epmaaecmo3n01.ca.hq.yellow.com"
-            ]
-        }
-    ]
-
 ---
-- name: patch aap nprod 
+- name: patch aap nprod
   hosts: localhost
   connection: local
   gather_facts: false
@@ -96,10 +9,9 @@ curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
     aap_nodes:
       - { host: "azaohaenu01.na.corp.yellow.com", role: execution }
       - { host: "azaohaenu02.na.corp.yellow.com", role: execution }
-      - { host: "epmaaecmo3n01.ca.hq.medisna.com", role: execution }
-      - { host: "azaohaacu01.na.corp.yellow.com",  role: controller }
-      - { host: "azaohaacu02.na.corp.yellow.com",  role: controller }
-
+      - { host: "epmaaecmo3n01.ca.hq.yellow.com", role: execution }
+      - { host: "azaohaacu01.na.corp.yellow.com", role: controller }
+      - { host: "azaohaacu02.na.corp.yellow.com", role: controller }
 
     aap_role_order:
       execution: 10
@@ -108,24 +20,22 @@ curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
     aap_exclude_hosts: []
 
     aap_gateway_url: "https://aohub-aap-uat.yellow.com"
-    aap_validate_certs: false
+    aap_validate_certs: true
 
     aap_reboot_timeout: 900
     aap_reboot_connect_timeout: 5
     aap_reboot_reconnect_delay: 30
 
+    # nprod gateway token, write scope. Replace with your vaulted value:
+    #   ansible-vault encrypt_string '<token>' --name aap_token
     aap_token: !vault |
-          $ANSIBLE_VAULT;1.1;AES256
-          34626461303661616637356430323436316630316565383530353936383730353831613333326265
-          3331616466343062346239376332313666643434376664390a663335393537396562353365393939
-          64623163366138323834343565313961666138366133613466653466376230643465613038626534
-          3934646430363766370a333835653631373765356334306462653834356563326335393935306238
-          31396161326166383530623165643333343061386262363862326163623461636433
+      $ANSIBLE_VAULT;1.1;AES256
+      PASTE_YOUR_ENCRYPTED_TOKEN_HERE
     aap_drain_enabled: true
     aap_drain_roles: ["execution", "controller"]
-    aap_drain_timeout: 1800          #  to wait for jobs to finish
+    aap_drain_timeout: 1800          # seconds to wait for jobs to finish
     aap_drain_poll_interval: 15
-    aap_api_settle_retries: 60       # after a reboot wait for api to come up
+    aap_api_settle_retries: 60       # after a reboot, wait for the API to answer
     aap_api_settle_delay: 10
 
     report_local_dir: "/tmp/reports"
@@ -135,11 +45,12 @@ curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
       - Prasad.Murthy@yellow.com
       - Eknath.pawar@yellow.com
       # - Pakkiyaraj.Sethuraman@yellow.com
+
     report_email_enabled: true
     report_email_smtp_host: "smtp.yellow.com"
     report_email_smtp_port: 25
-    report_email_smtp_secure: "starttls"   
-    report_email_from: jorge.chavez@yellow.com"
+    report_email_smtp_secure: "try"    # never | starttls | ssl | try
+    report_email_from: "jorge.chavez@yellow.com"
     report_email_to: "{{ recipient }}"
     report_email_attach_report: true
 
@@ -572,24 +483,11 @@ curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
           ({{ hostvars[h].patch_report_packages | default(0) }} pkgs){{ ', ' if not loop.last else '' }}
           {%- endfor %} -- report: {{ report_path }}
 
-    - name: Fail early if email is on but no app password was supplied
-      ansible.builtin.assert:
-        that:
-          - report_email_smtp_password | default('', true) | length > 0
-        fail_msg: >-
-          report_email_enabled is true but no SMTP password was found.
-          Set GMAIL_APP_PASSWORD in the environment, or pass
-          -e gmail_password=... from a vaulted file / AAP credential.
-        quiet: true
-      when: report_email_enabled | bool
-
     - name: Email patch report
       no_log: true
       community.general.mail:
         host: "{{ report_email_smtp_host }}"
         port: "{{ report_email_smtp_port }}"
-        username: "{{ report_email_smtp_username | default(omit, true) }}"
-        password: "{{ report_email_smtp_password | default(omit, true) }}"
         secure: "{{ report_email_smtp_secure }}"
         from: "{{ report_email_from }}"
         to: "{{ report_email_to if report_email_to is string else report_email_to | join(',') }}"
@@ -606,3 +504,4 @@ curl -sk -H "Authorization: Bearer $AAP_TOKEN" \
       ansible.builtin.fail:
         msg: "One or more nodes failed to patch. See the report at {{ report_path }}."
       when: patch_run_failed | default(false) | bool
+
