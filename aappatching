@@ -1,3 +1,17 @@
+Second clean run, and this one had the DNS fix in place. The playbook's done.
+
+For nprod, what's left:
+
+Token from the nprod gateway, write scope, System Administrator
+/api/controller/v2/ping/ there → gives you the instance: strings and node_type per node
+Fill in aap_nodes with the five hosts and roles
+aap_gateway_url → nprod VIP
+aap_validate_certs: true
+SMTP settings for the corporate relay, and drop or loosen the app-password assert if the relay doesn't authenticate
+Repos confirmed on all five before the window
+
+The API settle wait is the one setting that'll behave differently there — behind a VIP the gateway stays up while a node reboots, so it should return almost immediately rather than the four minutes your single box needs.
+
 ---
 - name: Build the AAP patch order from the hardcoded vars
   hosts: localhost
