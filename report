@@ -1,6 +1,521 @@
-systemctl status  ir_agent.service
-systemctl status  nexposeengine.service
-netstat -tulpn  | grep 40814
+---
+# =============================================================================
+# rapid7_prepost_check.yml
+#
+# Pre/Post change validation for Rapid7 agents:
+#   - ir_agent.service        (systemctl status)
+#   - nexposeengine.service   (systemctl status)
+#   - TCP/UDP port 40814 listening (netstat -tulpn | grep 40814, ss fallback)
+#
+# PRE  run : captures state, passes per-host results to the workflow via
+#            set_stats (rapid7_pre_summary). Nothing is written to target hosts.
+# POST run : captures state, compares to rapid7_pre_summary artifact
+#            (OK / REGRESSION / RECOVERED / STILL FAILING / RESTARTED), emails report.
+#
+# AAP Workflow (report emailed at the END only):
+#   [JT: Rapid7 PRE Check]  extra_vars: check_phase: pre
+#        | on success (pre never fails the node by default)
+#   [your change / patching job(s)]
+#        | ALWAYS  (so the post check + email still runs if the change fails)
+#   [JT: Rapid7 POST Check] extra_vars: check_phase: post
+#
+#   - PRE : no email, no job failure; publishes summary via set_stats
+#           (rapid7_pre_summary) as a workflow artifact.
+#   - POST: compares to PRE artifact, adds PRE summary to report, emails
+#           HTML + CSV once, fails node on FAIL / UNREACHABLE / REGRESSION.
+#   - Do NOT put check_phase in the workflow survey (workflow vars override
+#     both nodes). Put target_hosts / mail_to in the workflow survey;
+#     enable 'Prompt on launch' for Inventory/Limit on the workflow if needed.
+#
+# AAP Inventory:
+#   - Hosts come from the AAP inventory attached to the workflow (set Inventory
+#     on the workflow template so PRE and POST hit the same hosts).
+#   - Scope with target_hosts (inventory group/pattern, default: all) and/or the
+#     workflow/job Limit field. Report only lists hosts inside both.
+#   - Host names in the report/CSV = AAP inventory host names.
+#   - Works with the AAP Limit field: report/email run once, delegated to the
+#     execution node (localhost) - no localhost entry needed in the inventory.
+#   - Unreachable hosts stay in the run and are reported as UNREACHABLE.
+#   - Machine credential needs privilege escalation (become) for netstat -p.
+#
+# CLI:
+#   ansible-playbook rapid7_prepost_check.yml -e check_phase=pre  -e target_hosts=rapid7
+#   ansible-playbook rapid7_prepost_check.yml -e check_phase=post -e target_hosts=rapid7
+#
+# Workflow survey : target_hosts, mail_to
+# AAP credential  : smtp_user / smtp_password (custom credential type, extra_vars injector)
+# Collections     : community.general (mail only)
+# =============================================================================
 
-</body>
-</html>
+- name: Play 0 | Validate input
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+  become: false
+  vars: &common_vars
+    check_phase: pre                      # pre | post  (override via -e / survey)
+    target_hosts: all
+    services:
+      - ir_agent.service
+      - nexposeengine.service
+    check_port: 40814
+    report_dir: "{{ playbook_dir }}/reports"
+    report_prefix: rapid7_service
+    # --- email ---
+    send_email: "{{ check_phase | lower == 'post' }}"      # email only at end of workflow
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    smtp_user: "{{ lookup('ansible.builtin.env', 'SMTP_USER') | default('', true) }}"
+    smtp_password: "{{ lookup('ansible.builtin.env', 'SMTP_PASSWORD') | default('', true) }}"
+    mail_from: "{{ smtp_user }}"
+    mail_to: []
+    # --- behaviour ---
+    fail_on_issues: "{{ check_phase | lower == 'post' }}"  # POST fails on FAIL / UNREACHABLE / REGRESSION
+  tasks:
+    - name: Assert check_phase is valid
+      ansible.builtin.assert:
+        that:
+          - check_phase | lower in ['pre', 'post']
+          - services | length > 0
+        fail_msg: "check_phase must be 'pre' or 'post' (got '{{ check_phase }}')"
+        quiet: true
+      run_once: true
+      delegate_to: localhost
+
+# -----------------------------------------------------------------------------
+- name: Play 1 | Collect service and port state
+  hosts: "{{ target_hosts }}"
+  gather_facts: false
+  become: true
+  vars: *common_vars
+  tasks:
+    - name: Run checks
+      block:
+        - name: Check reachability / gather minimal facts
+          ansible.builtin.setup:
+            gather_subset: [min]
+          ignore_unreachable: true
+          register: reach
+
+        - name: Record unreachable host
+          ansible.builtin.set_fact:
+            prepost_result:
+              host: "{{ inventory_hostname }}"
+              fqdn: "{{ inventory_hostname }}"
+              os: "n/a"
+              phase: "{{ check_phase | lower }}"
+              checked_at: "{{ now(fmt='%Y-%m-%d %H:%M:%S') }}"
+              baseline_at: "{{ (rapid7_pre_summary.results | default({}))[inventory_hostname].checked_at | default('n/a') }}"
+              services: []
+              port: {}
+              status: UNREACHABLE
+              regressions: 0
+              error: "{{ reach.msg | default('Host unreachable or authentication failed') }}"
+          when: reach.unreachable | default(false)
+
+        - name: Service and port checks
+          when: not (reach.unreachable | default(false))
+          block:
+
+            - name: Query systemd unit properties
+              ansible.builtin.command:
+                argv:
+                  - systemctl
+                  - show
+                  - "{{ item }}"
+                  - --no-pager
+                  - -p
+                  - LoadState,ActiveState,SubState,UnitFileState,MainPID,ActiveEnterTimestamp,NRestarts
+              loop: "{{ services }}"
+              register: svc_show
+              changed_when: false
+              failed_when: false
+
+            - name: Capture systemctl status output
+              ansible.builtin.command:
+                argv: [systemctl, status, "{{ item }}", --no-pager, -l, -n, "5"]
+              loop: "{{ services }}"
+              register: svc_status
+              changed_when: false
+              failed_when: false
+              environment:
+                SYSTEMD_COLORS: "0"
+
+            - name: Check port {{ check_port }} listener (netstat, fallback ss)
+              ansible.builtin.shell: |
+                if command -v netstat >/dev/null 2>&1; then
+                  echo "#tool=netstat"; netstat -tulpn 2>/dev/null
+                else
+                  echo "#tool=ss"; ss -tulpn 2>/dev/null
+                fi | awk 'NR==1 || /:{{ check_port }}[[:space:]]/'
+              args:
+                executable: /bin/bash
+              register: port_raw
+              changed_when: false
+              failed_when: false
+
+            - name: Build service results
+              ansible.builtin.set_fact:
+                svc_list: "{{ svc_list | default([]) + [svc_entry] }}"
+              loop: "{{ svc_show.results }}"
+              loop_control:
+                index_var: idx
+                label: "{{ item.item }}"
+              vars:
+                _l: "{{ item.stdout_lines | default([]) }}"
+                _load: "{{ _l | select('match', '^LoadState=') | first | default('LoadState=unknown') | regex_replace('^LoadState=', '') }}"
+                _active: "{{ _l | select('match', '^ActiveState=') | first | default('ActiveState=unknown') | regex_replace('^ActiveState=', '') }}"
+                _sub: "{{ _l | select('match', '^SubState=') | first | default('SubState=unknown') | regex_replace('^SubState=', '') }}"
+                _enabled: "{{ _l | select('match', '^UnitFileState=') | first | default('UnitFileState=') | regex_replace('^UnitFileState=', '') }}"
+                _pid: "{{ _l | select('match', '^MainPID=') | first | default('MainPID=0') | regex_replace('^MainPID=', '') }}"
+                _since: "{{ _l | select('match', '^ActiveEnterTimestamp=') | first | default('ActiveEnterTimestamp=') | regex_replace('^ActiveEnterTimestamp=', '') }}"
+                _restarts: "{{ _l | select('match', '^NRestarts=') | first | default('NRestarts=n/a') | regex_replace('^NRestarts=', '') }}"
+                svc_entry:
+                  name: "{{ item.item }}"
+                  load: "{{ _load }}"
+                  active: "{{ _active }}"
+                  sub: "{{ _sub }}"
+                  enabled: "{{ _enabled | default('n/a', true) }}"
+                  pid: "{{ _pid }}"
+                  since: "{{ _since | default('n/a', true) }}"
+                  restarts: "{{ _restarts }}"
+                  healthy: "{{ _load == 'loaded' and _active == 'active' and _sub == 'running' }}"
+                  status_output: "{{ (svc_status.results[idx].stdout_lines | default([]))[:15] }}"
+
+            - name: Build port result
+              ansible.builtin.set_fact:
+                port_lines: "{{ port_raw.stdout_lines | default([]) | reject('match', '^#tool=') | list }}"
+                port_tool: "{{ port_raw.stdout_lines | default(['#tool=unknown']) | first | regex_replace('^#tool=', '') }}"
+
+            - name: Load PRE results from workflow artifact
+              ansible.builtin.set_fact:
+                pre_snap: "{{ (rapid7_pre_summary.results | default({}))[inventory_hostname] | default({}) if check_phase | lower == 'post' else {} }}"
+
+            - name: Compare services to baseline
+              ansible.builtin.set_fact:
+                svc_final: >-
+                  {{ svc_final | default([]) + [item | combine({
+                       'pre_healthy': _pre.healthy | default(none),
+                       'pre_state': ((_pre.active ~ '/' ~ _pre.sub) if (_pre.active is defined) else 'n/a'),
+                       'delta': _delta | trim })] }}
+              loop: "{{ svc_list }}"
+              loop_control:
+                label: "{{ item.name }}"
+              vars:
+                _pre: "{{ pre_snap.services | default([]) | selectattr('name', 'equalto', item.name) | list | first | default({}, true) }}"
+                _delta: >-
+                  {%- if check_phase | lower == 'pre' -%}BASELINE
+                  {%- elif _pre | length == 0 -%}NO BASELINE
+                  {%- elif (_pre.healthy | bool) and (item.healthy | bool) -%}
+                  {%- if _pre.pid | string != item.pid | string -%}OK (RESTARTED){%- else -%}OK{%- endif -%}
+                  {%- elif (_pre.healthy | bool) and not (item.healthy | bool) -%}REGRESSION
+                  {%- elif not (_pre.healthy | bool) and (item.healthy | bool) -%}RECOVERED
+                  {%- else -%}STILL FAILING{%- endif -%}
+
+            - name: Compare port to baseline
+              ansible.builtin.set_fact:
+                port_final:
+                  port: "{{ check_port }}"
+                  tool: "{{ port_tool }}"
+                  listening: "{{ port_lines | length > 0 }}"
+                  lines: "{{ port_lines }}"
+                  pre_listening: "{{ pre_snap.port.listening | default(none) }}"
+                  delta: "{{ _pdelta | trim }}"
+              vars:
+                _now: "{{ port_lines | length > 0 }}"
+                _pdelta: >-
+                  {%- if check_phase | lower == 'pre' -%}BASELINE
+                  {%- elif pre_snap.port.listening is not defined -%}NO BASELINE
+                  {%- elif (pre_snap.port.listening | bool) and (_now | bool) -%}OK
+                  {%- elif (pre_snap.port.listening | bool) -%}REGRESSION
+                  {%- elif (_now | bool) -%}RECOVERED
+                  {%- else -%}STILL FAILING{%- endif -%}
+
+            - name: Build host result
+              ansible.builtin.set_fact:
+                prepost_result:
+                  host: "{{ inventory_hostname }}"
+                  fqdn: "{{ ansible_fqdn | default(inventory_hostname) }}"
+                  os: "{{ ansible_distribution | default('') }} {{ ansible_distribution_version | default('') }}"
+                  phase: "{{ check_phase | lower }}"
+                  checked_at: "{{ now(fmt='%Y-%m-%d %H:%M:%S') }}"
+                  baseline_at: "{{ pre_snap.checked_at | default('n/a') }}"
+                  services: "{{ svc_final }}"
+                  port: "{{ port_final }}"
+                  status: "{{ 'PASS' if ((svc_final | selectattr('healthy') | list | length) == (svc_final | length) and (port_final.listening | bool)) else 'FAIL' }}"
+                  regressions: "{{ (svc_final | selectattr('delta', 'equalto', 'REGRESSION') | list | length) + (1 if port_final.delta == 'REGRESSION' else 0) }}"
+                  error: ""
+
+      rescue:
+        - name: Record host error
+          ansible.builtin.set_fact:
+            prepost_result:
+              host: "{{ inventory_hostname }}"
+              fqdn: "{{ inventory_hostname }}"
+              os: "n/a"
+              phase: "{{ check_phase | lower }}"
+              checked_at: "{{ now(fmt='%Y-%m-%d %H:%M:%S') }}"
+              baseline_at: "n/a"
+              services: []
+              port: {}
+              status: ERROR
+              regressions: 0
+              error: "{{ ansible_failed_task.name | default('') }}: {{ ansible_failed_result.msg | default('unknown error') }}"
+
+# -----------------------------------------------------------------------------
+- name: Play 2 | Aggregate, report and email (runs once on execution node)
+  hosts: "{{ target_hosts }}"
+  gather_facts: false
+  become: false
+  vars: *common_vars
+  tasks:
+    - name: Report
+      run_once: true
+      delegate_to: localhost
+      block:
+        - name: Set report metadata
+          ansible.builtin.set_fact:
+            phase: "{{ check_phase | lower }}"
+            report_ts: "{{ now(fmt='%Y%m%d_%H%M%S') }}"
+            report_time: "{{ now(fmt='%Y-%m-%d %H:%M:%S') }}"
+            target_list: "{{ ansible_play_hosts_all }}"
+
+        - name: Collect host results (stub unreachable hosts)
+          ansible.builtin.set_fact:
+            all_results: "{{ all_results | default([]) + [hostvars[item].prepost_result | default(stub)] }}"
+          loop: "{{ target_list }}"
+          vars:
+            stub:
+              host: "{{ item }}"
+              fqdn: "{{ item }}"
+              os: "n/a"
+              phase: "{{ phase }}"
+              checked_at: "n/a"
+              baseline_at: "n/a"
+              services: []
+              port: {}
+              status: UNREACHABLE
+              regressions: 0
+              error: "Host unreachable or authentication failed - no data collected"
+
+        - name: Summarise
+          ansible.builtin.set_fact:
+            all_results: "{{ all_results | default([]) | sort(attribute='host') }}"
+            cnt_total: "{{ all_results | default([]) | length }}"
+            cnt_pass: "{{ all_results | default([]) | selectattr('status', 'equalto', 'PASS') | list | length }}"
+            cnt_fail: "{{ all_results | default([]) | selectattr('status', 'equalto', 'FAIL') | list | length }}"
+            cnt_unreach: "{{ all_results | default([]) | selectattr('status', 'in', ['UNREACHABLE', 'ERROR']) | list | length }}"
+            cnt_regress: "{{ all_results | default([]) | map(attribute='regressions') | map('int') | sum }}"
+            report_html: "{{ report_dir }}/{{ report_prefix }}_{{ check_phase | lower }}check_{{ now(fmt='%Y%m%d_%H%M%S') }}.html"
+            report_csv: "{{ report_dir }}/{{ report_prefix }}_{{ check_phase | lower }}check_{{ now(fmt='%Y%m%d_%H%M%S') }}.csv"
+
+        - name: Build slim PRE results for artifact
+          ansible.builtin.set_fact:
+            pre_results: >-
+              {{ pre_results | default({}) | combine({item.host: {
+                   'checked_at': item.checked_at,
+                   'status': item.status,
+                   'services': _svcs,
+                   'port': {'listening': item.port.listening} if item.port.listening is defined else {} }}) }}
+          loop: "{{ all_results }}"
+          loop_control:
+            label: "{{ item.host }}"
+          vars:
+            _svcs: >-
+              {%- set out = [] -%}
+              {%- for sv in item.services -%}
+              {%- set _ = out.append({'name': sv.name, 'active': sv.active, 'sub': sv.sub, 'healthy': sv.healthy, 'pid': sv.pid}) -%}
+              {%- endfor -%}
+              {{ out }}
+          when: phase == 'pre'
+
+        - name: Publish PRE summary to workflow (set_stats artifact)
+          ansible.builtin.set_stats:
+            data:
+              rapid7_pre_summary:
+                job_id: "{{ tower_job_id | default(awx_job_id | default('manual')) }}"
+                time: "{{ report_time }}"
+                total: "{{ cnt_total }}"
+                pass: "{{ cnt_pass }}"
+                fail: "{{ cnt_fail }}"
+                unreachable: "{{ cnt_unreach }}"
+                hosts: "{{ dict(all_results | map(attribute='host') | zip(all_results | map(attribute='status'))) }}"
+                results: "{{ pre_results | default({}) }}"
+            per_host: false
+            aggregate: false
+          when: phase == 'pre'
+
+        - name: Ensure report directory exists
+          ansible.builtin.file:
+            path: "{{ report_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: Render HTML report
+          ansible.builtin.set_fact:
+            report_body: |
+              {%- macro badge(t) -%}
+              {%- set c = {'PASS':'#238636','OK':'#238636','BASELINE':'#1f6feb','RECOVERED':'#1f6feb',
+                           'OK (RESTARTED)':'#9e6a03','NO BASELINE':'#9e6a03',
+                           'FAIL':'#da3633','REGRESSION':'#da3633','STILL FAILING':'#da3633',
+                           'UNREACHABLE':'#6e40c9','ERROR':'#6e40c9'} -%}
+              <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;color:#ffffff;background:{{ c[t] | default('#30363d') }}">{{ t }}</span>
+              {%- endmacro -%}
+              <!DOCTYPE html>
+              <html><head><meta charset="utf-8">
+              <title>Rapid7 {{ phase | upper }}-Check Report</title>
+              <style>
+              body{margin:0;padding:24px;background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px}
+              h1{color:#58a6ff;font-size:22px;margin:0 0 4px}
+              h2{color:#58a6ff;font-size:16px;border-bottom:1px solid #30363d;padding-bottom:6px;margin:28px 0 12px}
+              h3{color:#e6edf3;font-size:14px;margin:0 0 6px}
+              .muted{color:#8b949e;font-size:12px}
+              table.grid{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d}
+              table.grid th{background:#21262d;color:#8b949e;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 10px;border-bottom:1px solid #30363d}
+              table.grid td{padding:8px 10px;border-bottom:1px solid #21262d;vertical-align:top}
+              .card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px 20px;text-align:center;min-width:90px}
+              .num{font-size:26px;font-weight:700}
+              .host{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px 16px;margin:0 0 16px}
+              pre{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px 10px;color:#9da7b3;font-size:11px;white-space:pre-wrap;word-break:break-all;margin:6px 0 0}
+              .err{background:#2d1417;border:1px solid #da3633;color:#ffa198;border-radius:4px;padding:8px 10px;margin:8px 0}
+              code{color:#79c0ff}
+              </style></head>
+              <body>
+              <h1>Rapid7 Agent {{ phase | upper }}-Change Validation</h1>
+              <div class="muted">Generated {{ report_time }} &nbsp;|&nbsp; Targets: <code>{{ target_hosts }}</code> &nbsp;|&nbsp; AAP Job: {{ tower_job_id | default(awx_job_id | default('manual')) }}{% if awx_workflow_job_id is defined or tower_workflow_job_id is defined %} &nbsp;|&nbsp; Workflow: {{ awx_workflow_job_id | default(tower_workflow_job_id) }}{% endif %}
+              &nbsp;|&nbsp; Checks: {% for s in services %}<code>systemctl status {{ s }}</code>, {% endfor %}<code>netstat -tulpn | grep {{ check_port }}</code></div>
+
+              <table style="border-spacing:10px;margin:16px -10px 0"><tr>
+                <td class="card"><div class="num" style="color:#e6edf3">{{ cnt_total }}</div><div class="muted">Hosts</div></td>
+                <td class="card"><div class="num" style="color:#3fb950">{{ cnt_pass }}</div><div class="muted">Pass</div></td>
+                <td class="card"><div class="num" style="color:#f85149">{{ cnt_fail }}</div><div class="muted">Fail</div></td>
+                <td class="card"><div class="num" style="color:#a371f7">{{ cnt_unreach }}</div><div class="muted">Unreachable / Error</div></td>
+                {% if phase == 'post' %}<td class="card"><div class="num" style="color:{{ '#f85149' if cnt_regress | int > 0 else '#3fb950' }}">{{ cnt_regress }}</div><div class="muted">Regressions</div></td>{% endif %}
+              </tr></table>
+              {% if phase == 'post' %}
+              {% set ps = rapid7_pre_summary | default({}) %}
+              <div style="background:#161b22;border:1px solid #30363d;border-left:4px solid #1f6feb;border-radius:6px;padding:10px 14px;margin-top:6px">
+              {% if ps %}<b style="color:#e6edf3">PRE-Check</b> &nbsp;<span class="muted">Job {{ ps.job_id | default('n/a') }} &bull; {{ ps.time | default('n/a') }}</span> &nbsp;&nbsp;
+                <span style="color:#3fb950">{{ ps.pass | default('n/a') }} PASS</span> &nbsp;/&nbsp; <span style="color:#f85149">{{ ps.fail | default('n/a') }} FAIL</span> &nbsp;/&nbsp; <span style="color:#a371f7">{{ ps.unreachable | default('n/a') }} UNREACHABLE/ERROR</span> &nbsp;<span class="muted">of {{ ps.total | default('n/a') }} hosts</span>
+                &nbsp;&rarr;&nbsp; <b style="color:#e6edf3">POST-Check</b> &nbsp;<span style="color:#3fb950">{{ cnt_pass }} PASS</span> &nbsp;/&nbsp; <span style="color:#f85149">{{ cnt_fail }} FAIL</span> &nbsp;/&nbsp; <span style="color:#a371f7">{{ cnt_unreach }} UNREACHABLE/ERROR</span>
+              {% else %}<span class="muted">No PRE-check workflow artifact received &mdash; hosts show NO BASELINE (run the POST check from the workflow after the PRE check).</span>{% endif %}
+              </div>
+              {% endif %}
+
+              <h2>Host Summary</h2>
+              <table class="grid">
+                <tr><th>Host</th><th>Overall</th>{% for s in services %}<th>{{ s }}</th>{% endfor %}<th>Port {{ check_port }}</th>{% if phase == 'post' %}<th>Pre vs Post</th>{% endif %}</tr>
+                {% for r in all_results %}
+                <tr>
+                  <td><b style="color:#e6edf3">{{ r.host }}</b><br><span class="muted">{{ r.os }}</span></td>
+                  <td>{{ badge(r.status) }}{% if phase == 'post' and (rapid7_pre_summary | default({})).hosts is defined %}<br><span class="muted">pre: {{ rapid7_pre_summary.hosts[r.host] | default('n/a') }}</span>{% endif %}</td>
+                  {% for s in services %}{% set sv = r.services | selectattr('name', 'equalto', s) | list %}
+                  <td>{% if sv %}{{ badge('PASS' if sv[0].healthy | bool else 'FAIL') }}<br><span class="muted">{{ sv[0].active }}/{{ sv[0].sub }}</span>{% else %}<span class="muted">&mdash;</span>{% endif %}</td>
+                  {% endfor %}
+                  <td>{% if r.port.listening is defined %}{{ badge('PASS' if r.port.listening | bool else 'FAIL') }}<br><span class="muted">{{ 'LISTEN' if r.port.listening | bool else 'not listening' }}</span>{% else %}<span class="muted">&mdash;</span>{% endif %}</td>
+                  {% if phase == 'post' %}
+                  {% set deltas = (r.services | map(attribute='delta') | list) + ([r.port.delta] if r.port.delta is defined else []) %}
+                  <td>{% for d in deltas | unique %}{{ badge(d) }} {% else %}<span class="muted">&mdash;</span>{% endfor %}</td>
+                  {% endif %}
+                </tr>
+                {% endfor %}
+              </table>
+
+              <h2>Host Details</h2>
+              {% for r in all_results %}
+              <div class="host">
+                <h3>{{ r.host }} &nbsp;{{ badge(r.status) }}</h3>
+                <div class="muted">FQDN: {{ r.fqdn }} &nbsp;|&nbsp; OS: {{ r.os }} &nbsp;|&nbsp; Checked: {{ r.checked_at }}{% if phase == 'post' %} &nbsp;|&nbsp; PRE checked: {{ r.baseline_at }}{% endif %}</div>
+                {% if r.error %}<div class="err">{{ r.error | e }}</div>{% endif %}
+                {% if r.services %}
+                <table class="grid" style="margin-top:10px">
+                  <tr><th>Service</th><th>Load</th><th>Active</th><th>Sub</th><th>Enabled</th><th>PID</th><th>Restarts</th><th>Active Since</th>{% if phase == 'post' %}<th>Pre State</th><th>Post State</th>{% endif %}<th>Result</th></tr>
+                  {% for s in r.services %}
+                  <tr>
+                    <td><code>{{ s.name }}</code></td><td>{{ s.load }}</td><td>{{ s.active }}</td><td>{{ s.sub }}</td><td>{{ s.enabled }}</td>
+                    <td>{{ s.pid }}</td><td>{{ s.restarts }}</td><td class="muted">{{ s.since }}</td>
+                    {% if phase == 'post' %}{% set post_st = s.active ~ '/' ~ s.sub %}<td>{{ s.pre_state }}</td><td style="color:{{ '#e6edf3' if (post_st == s.pre_state or s.pre_state == 'n/a') else '#f85149' }};font-weight:600">{{ post_st }}</td>{% endif %}
+                    <td>{{ badge('PASS' if s.healthy | bool else 'FAIL') }}</td>
+                  </tr>
+                  {% endfor %}
+                  <tr>
+                    <td><code>port {{ r.port.port }}</code></td><td colspan="7" class="muted">via {{ r.port.tool }} &mdash; {{ r.port.lines | length }} listener(s)</td>
+                    {% if phase == 'post' %}<td>{{ 'LISTEN' if r.port.pre_listening | bool else ('n/a' if r.port.pre_listening is none else 'not listening') }}</td><td style="color:{{ '#e6edf3' if (r.port.pre_listening is none or (r.port.listening | bool) == (r.port.pre_listening | bool)) else '#f85149' }};font-weight:600">{{ 'LISTEN' if r.port.listening | bool else 'not listening' }}</td>{% endif %}
+                    <td>{{ badge('PASS' if r.port.listening | bool else 'FAIL') }}</td>
+                  </tr>
+                </table>
+                <div class="muted" style="margin-top:10px"><b>netstat -tulpn | grep {{ check_port }}</b></div>
+                <pre>{% for l in r.port.lines %}{{ l | e }}
+              {% else %}No listener found on port {{ check_port }}{% endfor %}</pre>
+                {% for s in r.services %}
+                <div class="muted" style="margin-top:10px"><b>systemctl status {{ s.name }}</b></div>
+                <pre>{% for l in s.status_output %}{{ l | e }}
+              {% endfor %}</pre>
+                {% endfor %}
+                {% endif %}
+              </div>
+              {% endfor %}
+              <div class="muted" style="margin-top:20px;text-align:center">Rapid7 pre/post validation &bull; Ansible Automation Platform</div>
+              </body></html>
+
+        - name: Write HTML report
+          ansible.builtin.copy:
+            dest: "{{ report_html }}"
+            content: "{{ report_body }}"
+            mode: "0644"
+
+        - name: Write CSV report
+          ansible.builtin.copy:
+            dest: "{{ report_csv }}"
+            mode: "0644"
+            content: |
+              host,fqdn,os,phase,overall,check,load,active,sub,enabled,pid,since,result,pre_state,post_state,checked_at,error
+              {% for r in all_results %}
+              {% if r.services %}
+              {% for s in r.services %}
+              {{ r.host }},{{ r.fqdn }},"{{ r.os }}",{{ r.phase }},{{ r.status }},{{ s.name }},{{ s.load }},{{ s.active }},{{ s.sub }},{{ s.enabled }},{{ s.pid }},"{{ s.since }}",{{ 'PASS' if s.healthy | bool else 'FAIL' }},{{ s.pre_state }},{{ s.active }}/{{ s.sub }},{{ r.checked_at }},
+              {% endfor %}
+              {{ r.host }},{{ r.fqdn }},"{{ r.os }}",{{ r.phase }},{{ r.status }},port_{{ r.port.port }},,{{ 'LISTEN' if r.port.listening | bool else 'CLOSED' }},,,,,{{ 'PASS' if r.port.listening | bool else 'FAIL' }},{{ 'n/a' if r.port.pre_listening is none else ('LISTEN' if r.port.pre_listening | bool else 'CLOSED') }},{{ 'LISTEN' if r.port.listening | bool else 'CLOSED' }},{{ r.checked_at }},
+              {% else %}
+              {{ r.host }},{{ r.fqdn }},n/a,{{ r.phase }},{{ r.status }},,,,,,,,,,,,"{{ r.error | replace('"', "'") }}"
+              {% endif %}
+              {% endfor %}
+
+        - name: Show summary
+          ansible.builtin.debug:
+            msg:
+              - "Phase: {{ phase | upper }} | Hosts: {{ cnt_total }} | PASS: {{ cnt_pass }} | FAIL: {{ cnt_fail }} | UNREACHABLE/ERROR: {{ cnt_unreach }} | REGRESSIONS: {{ cnt_regress }}"
+              - "HTML: {{ report_html }}"
+              - "CSV : {{ report_csv }}"
+
+        - name: Email report
+          community.general.mail:
+            host: "{{ smtp_host }}"
+            port: "{{ smtp_port | int }}"
+            secure: starttls
+            username: "{{ smtp_user }}"
+            password: "{{ smtp_password }}"
+            from: "{{ mail_from }}"
+            to: "{{ mail_to if (mail_to is iterable and mail_to is not string) else mail_to.split(',') }}"
+            subject: >-
+              [{{ phase | upper }}] Rapid7 Service Check -
+              {{ cnt_pass }}/{{ cnt_total }} PASS{{ ' | ' ~ cnt_regress ~ ' REGRESSION(S)' if cnt_regress | int > 0 else '' }}
+              {{- ' | ' ~ cnt_unreach ~ ' UNREACHABLE' if cnt_unreach | int > 0 else '' }}
+            subtype: html
+            body: "{{ report_body }}"
+            attach:
+              - "{{ report_html }}"
+              - "{{ report_csv }}"
+          when:
+            - send_email | bool
+            - mail_to | length > 0
+          no_log: false
+
+        - name: Fail job when issues found
+          ansible.builtin.fail:
+            msg: >-
+              {{ phase | upper }} check found issues: FAIL={{ cnt_fail }},
+              UNREACHABLE/ERROR={{ cnt_unreach }}, REGRESSIONS={{ cnt_regress }}.
+              See {{ report_html | basename }}.
+          when:
+            - fail_on_issues | bool
+            - (cnt_fail | int) + (cnt_unreach | int) + (cnt_regress | int) > 0
