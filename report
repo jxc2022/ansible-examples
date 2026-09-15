@@ -15,8 +15,11 @@
 # AAP Workflow (report emailed at the END only):
 #   [JT: Rapid7 PRE Check]  extra_vars: check_phase: pre
 #        | on success (pre never fails the node by default)
-#   [your change / patching job(s)]
-#        | ALWAYS  (so the post check + email still runs if the change fails)
+#   [your patching job template]
+#        | ALWAYS  (so the post check + email still runs if patching fails)
+#   POST waits for SSH after reboot (post_connect_timeout) and re-checks
+#   services/port (post_retries x post_delay) before recording results.
+#   After a reboot, 'OK (RESTARTED)' is expected (agent PID changed).
 #   [JT: Rapid7 POST Check] extra_vars: check_phase: post
 #
 #   - PRE : no email, no job failure; publishes summary via set_stats
@@ -24,14 +27,12 @@
 #   - POST: compares to PRE artifact, adds PRE summary to report, emails
 #           HTML + CSV once, fails node on FAIL / UNREACHABLE / REGRESSION.
 #   - Do NOT put check_phase in the workflow survey (workflow vars override
-#     both nodes). Put target_hosts / mail_to in the workflow survey;
-#     enable 'Prompt on launch' for Inventory/Limit on the workflow if needed.
+#     both nodes). Put mail_to in the workflow survey.
 #
 # AAP Inventory:
-#   - Hosts come from the AAP inventory attached to the workflow (set Inventory
-#     on the workflow template so PRE and POST hit the same hosts).
-#   - Scope with target_hosts (inventory group/pattern, default: all) and/or the
-#     workflow/job Limit field. Report only lists hosts inside both.
+#   - Runs against ALL hosts in the AAP inventory 'Rapid7-Prod' (hosts: all).
+#     Set Inventory = Rapid7-Prod on all three job templates / the workflow.
+#   - Optional: use the AAP Limit field to narrow hosts for a run.
 #   - Host names in the report/CSV = AAP inventory host names.
 #   - Works with the AAP Limit field: report/email run once, delegated to the
 #     execution node (localhost) - no localhost entry needed in the inventory.
@@ -39,21 +40,20 @@
 #   - Machine credential needs privilege escalation (become) for netstat -p.
 #
 # CLI:
-#   ansible-playbook rapid7_prepost_check.yml -e check_phase=pre  -e target_hosts=rapid7
-#   ansible-playbook rapid7_prepost_check.yml -e check_phase=post -e target_hosts=rapid7
+#   ansible-playbook -i <inventory> rapid7_prepost_check.yml -e check_phase=pre
+#   ansible-playbook -i <inventory> rapid7_prepost_check.yml -e check_phase=post
 #
-# Workflow survey : target_hosts, mail_to
+# Workflow survey : mail_to
 # AAP credential  : smtp_user / smtp_password (custom credential type, extra_vars injector)
 # Collections     : community.general (mail only)
 # =============================================================================
 
 - name: Play 0 | Validate input
-  hosts: "{{ target_hosts | default('all') }}"
+  hosts: all
   gather_facts: false
   become: false
   vars: &common_vars
     check_phase: pre                      # pre | post  (override via -e / survey)
-    target_hosts: all
     services:
       - ir_agent.service
       - nexposeengine.service
@@ -70,6 +70,10 @@
     mail_to: []
     # --- behaviour ---
     fail_on_issues: "{{ check_phase | lower == 'post' }}"  # POST fails on FAIL / UNREACHABLE / REGRESSION
+    # --- POST after patching/reboot: give hosts & Rapid7 agents time to come back ---
+    post_connect_timeout: 900             # seconds to wait for SSH after reboot
+    post_retries: 10                      # re-check services/port this many times
+    post_delay: 30                        # seconds between re-checks (10 x 30 = 5 min max)
   tasks:
     - name: Assert check_phase is valid
       ansible.builtin.assert:
@@ -83,13 +87,21 @@
 
 # -----------------------------------------------------------------------------
 - name: Play 1 | Collect service and port state
-  hosts: "{{ target_hosts }}"
+  hosts: all
   gather_facts: false
   become: true
   vars: *common_vars
   tasks:
     - name: Run checks
       block:
+        - name: POST | Wait for host to come back after patching/reboot
+          ansible.builtin.wait_for_connection:
+            timeout: "{{ post_connect_timeout | int }}"
+            sleep: 10
+          ignore_unreachable: true
+          failed_when: false
+          when: check_phase | lower == 'post'
+
         - name: Check reachability / gather minimal facts
           ansible.builtin.setup:
             gather_subset: [min]
@@ -129,6 +141,13 @@
               register: svc_show
               changed_when: false
               failed_when: false
+              # POST: wait for agent to start after reboot (skip wait if unit not installed)
+              until: >-
+                check_phase | lower != 'post'
+                or 'LoadState=not-found' in svc_show.stdout
+                or ('ActiveState=active' in svc_show.stdout and 'SubState=running' in svc_show.stdout)
+              retries: "{{ post_retries | int if check_phase | lower == 'post' else 0 }}"
+              delay: "{{ post_delay | int }}"
 
             - name: Capture systemctl status output
               ansible.builtin.command:
@@ -152,6 +171,10 @@
               register: port_raw
               changed_when: false
               failed_when: false
+              # POST: wait for port to open after reboot
+              until: check_phase | lower != 'post' or (port_raw.stdout_lines | default([]) | length) > 1
+              retries: "{{ post_retries | int if check_phase | lower == 'post' else 0 }}"
+              delay: "{{ post_delay | int }}"
 
             - name: Build service results
               ansible.builtin.set_fact:
@@ -263,7 +286,7 @@
 
 # -----------------------------------------------------------------------------
 - name: Play 2 | Aggregate, report and email (runs once on execution node)
-  hosts: "{{ target_hosts }}"
+  hosts: all
   gather_facts: false
   become: false
   vars: *common_vars
@@ -381,7 +404,7 @@
               </style></head>
               <body>
               <h1>Rapid7 Agent {{ phase | upper }}-Change Validation</h1>
-              <div class="muted">Generated {{ report_time }} &nbsp;|&nbsp; Targets: <code>{{ target_hosts }}</code> &nbsp;|&nbsp; AAP Job: {{ tower_job_id | default(awx_job_id | default('manual')) }}{% if awx_workflow_job_id is defined or tower_workflow_job_id is defined %} &nbsp;|&nbsp; Workflow: {{ awx_workflow_job_id | default(tower_workflow_job_id) }}{% endif %}
+              <div class="muted">Generated {{ report_time }} &nbsp;|&nbsp; Inventory: <code>{{ tower_inventory_name | default(awx_inventory_name | default('Rapid7-Prod')) }}</code> &nbsp;|&nbsp; AAP Job: {{ tower_job_id | default(awx_job_id | default('manual')) }}{% if awx_workflow_job_id is defined or tower_workflow_job_id is defined %} &nbsp;|&nbsp; Workflow: {{ awx_workflow_job_id | default(tower_workflow_job_id) }}{% endif %}
               &nbsp;|&nbsp; Checks: {% for s in services %}<code>systemctl status {{ s }}</code>, {% endfor %}<code>netstat -tulpn | grep {{ check_port }}</code></div>
 
               <table style="border-spacing:10px;margin:16px -10px 0"><tr>
@@ -519,3 +542,4 @@
           when:
             - fail_on_issues | bool
             - (cnt_fail | int) + (cnt_unreach | int) + (cnt_regress | int) > 0
+
