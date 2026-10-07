@@ -1,0 +1,157 @@
+---
+# sssd_access_report.yml
+# Reports which AD groups are allowed to log in per host, based on the SSSD access_provider
+# (read from /etc/sssd/sssd.conf plus /etc/sssd/conf.d/*.conf drop-ins):
+#   access_provider = permit  -> groups from /etc/security/access.conf ("+" lines)
+#   access_provider = simple  -> groups from simple_allow_groups in sssd.conf / drop-ins
+# Output: CSV with one row per group per host; source_file is the file the group came from.
+#
+# Run:
+#   ansible-playbook -i inventory sssd_access_report.yml \
+#     -e mail_to=you@example.com -e smtp_host=relay.example.com
+
+- name: SSSD access provider / allowed group report
+  hosts: all
+  become: true
+  gather_facts: true
+  gather_subset:
+    - min
+
+  vars:
+    report_path: /tmp/sssd_access_report.csv
+    # Email settings - report is written and mailed (run_once) on localhost, i.e. the execution
+    # environment on the AAP execution node, so smtp_host must be reachable from that node
+    mail_to: "CHANGEME@example.com"          # comma-separated string or list
+    mail_from: "aap-reports@{{ ansible_facts['domain'] | default('localhost', true) }}"
+    mail_subject: "SSSD access group report - {{ ansible_facts['date_time']['date'] | default('') }}"
+    smtp_host: localhost
+    smtp_port: 25
+    smtp_secure: try                          # always | never | try | starttls
+    # smtp_username / smtp_password: set (vault / AAP credential) only if the relay needs auth
+    # Entries in access.conf "+" lines that should not be reported as groups
+    access_conf_exclude:
+      - root
+      - ALL
+
+    # ---- lazily evaluated per host ----
+    report_hostname: "{{ ansible_facts['fqdn'] | default(inventory_hostname) }}"
+    os_version: "{{ ansible_facts['distribution'] | default('unknown') }} {{ ansible_facts['distribution_version'] | default('') }}"
+
+    # sssd.conf first, then drop-ins in alphabetical order (same order SSSD loads them)
+    sssd_file_results: "{{ [sssd_raw] + (sssd_dropin_raw.results | default([])) }}"
+
+    sssd_all_text: >-
+      {{ sssd_file_results
+         | map(attribute='content', default='')
+         | map('b64decode') | join('\n') }}
+
+    access_text: "{{ access_raw.content | default('') | b64decode }}"
+
+    access_providers: >-
+      {{ sssd_all_text
+         | regex_findall('^\\s*access_provider\\s*=\\s*(\\S+)', multiline=True)
+         | map('lower') | unique | list }}
+
+    access_groups: >-
+      {{ access_text
+         | regex_findall('^\\s*\\+\\s*:([^:\\n]*):', multiline=True)
+         | map('split') | flatten
+         | map('regex_replace', '^\\((.*)\\)$', '\\1')
+         | reject('in', access_conf_exclude)
+         | unique | list }}
+
+    host_rows: |-
+      {%- set ns = namespace(rows=[]) -%}
+      {%- set base = '"' ~ report_hostname ~ '","' ~ (os_version | trim) ~ '"' -%}
+      {%- if 'simple' in access_providers -%}
+      {%-   for f in sssd_file_results -%}
+      {%-     set groups = (f.content | default('') | b64decode)
+                | regex_findall('^\\s*simple_allow_groups\\s*=\\s*(.+)$', multiline=True)
+                | map('split', ',') | flatten
+                | map('trim') | select | unique | list -%}
+      {%-     for g in groups -%}
+      {%-       set ns.rows = ns.rows + [base ~ ',"simple","' ~ (f.source | default('/etc/sssd/sssd.conf')) ~ '","' ~ g ~ '"'] -%}
+      {%-     endfor -%}
+      {%-   endfor -%}
+      {%- endif -%}
+      {%- if 'permit' in access_providers -%}
+      {%-   for g in access_groups -%}
+      {%-     set ns.rows = ns.rows + [base ~ ',"permit","/etc/security/access.conf","' ~ g ~ '"'] -%}
+      {%-   endfor -%}
+      {%- endif -%}
+      {%- if ns.rows | length == 0 -%}
+      {%-   set ns.rows = [base ~ ',"' ~ (access_providers | join('|') | default('not_found', true)) ~ '","n/a",""'] -%}
+      {%- endif -%}
+      {{ ns.rows | join('\n') }}
+
+  tasks:
+    - name: Read /etc/sssd/sssd.conf
+      ansible.builtin.slurp:
+        src: /etc/sssd/sssd.conf
+      register: sssd_raw
+      failed_when: false
+
+    - name: Find drop-ins in /etc/sssd/conf.d
+      ansible.builtin.find:
+        paths: /etc/sssd/conf.d
+        patterns: "*.conf"
+        file_type: file
+        hidden: false
+      register: sssd_dropins
+      failed_when: false
+
+    - name: Read drop-ins
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: "{{ sssd_dropins.files | default([]) | map(attribute='path') | sort }}"
+      register: sssd_dropin_raw
+      failed_when: false
+
+    - name: Read /etc/security/access.conf (access_provider = permit only)
+      ansible.builtin.slurp:
+        src: /etc/security/access.conf
+      register: access_raw
+      failed_when: false
+      when: "'permit' in access_providers"
+
+    - name: Build CSV rows for this host
+      ansible.builtin.set_fact:
+        csv_rows: "{{ host_rows }}"
+
+    - name: Show rows
+      ansible.builtin.debug:
+        msg: "{{ csv_rows.split('\n') }}"
+
+    - name: Write CSV report
+      ansible.builtin.copy:
+        dest: "{{ report_path }}"
+        mode: "0644"
+        content: |
+          hostname,os_version,access_provider,source_file,group
+          {% for h in ansible_play_hosts_all %}
+          {{ hostvars[h].csv_rows | default('"' ~ h ~ '","unknown","unreachable_or_failed","n/a",""') }}
+          {% endfor %}
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Email CSV report
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        secure: "{{ smtp_secure }}"
+        username: "{{ smtp_username | default(omit) }}"
+        password: "{{ smtp_password | default(omit) }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: "{{ mail_subject }}"
+        body: |
+          SSSD access provider / allowed group report attached.
+
+          Hosts in play: {{ ansible_play_hosts_all | length }}
+          Hosts reported: {{ ansible_play_hosts | length }}
+        attach:
+          - "{{ report_path }}"
+      run_once: true
+      delegate_to: localhost
+      become: false
