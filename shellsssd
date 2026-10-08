@@ -58,3 +58,55 @@
       run_once: true
       delegate_to: localhost
       become: false
+
+
+
+
+cat /etc/security/access.conf
+#############################################################################
+# Configure User Access Here
+##############################################################################
++ : azautomation: ALL
++ : cbs_ansible : ALL
++ : dlinunxsvc : ALL
++ : slbscru : All
++ : dtqiwpj : ALL
++ : edwujto : ALL
++ : eudf33a : ALL
++ : sudf33a : ALL
++ : nxautomation: ALL
++ : omsagent: ALL
++ : szf32g4 : ALL
++ : root : ALL
+
+##############################################################################
+# Configure Group Access Here
+##############################################################################
++ : yellow-na-aap-svc :  ALL
++ : as1156_prd_infra_serveraccess : ALL
++ : cims : ALL
++ : cims-application : ALL
++ : depmptch : ALL
++ : dmlinuxadmins : ALL
++ : LM_Unix_SvcAct : ALL
++ : yellow-NA-AAP-Svc : ALL
++ : yellow-NA-OSU-ENG : ALL
++ : yellow-NAyellow-ServiceNowDiscovery : ALL
++ : msp-tcs-osu-operations : ALL
++ : yellowsecop : ALL
++ : MSP-TCS-Connect-Linux : ALL
++ : MSP-TCS-EDP-Operations : ALL
++ : MSP-TCS-Ignio-Admins : ALL
++ : cims-azureinfra : ALL
++ : INA_REBATES : ALL
++ : MSP-TCS-Storage-Operations : ALL
++ : App-DBeaver-Users
++ : sailpoint_linux_server_access : ALL
++ : soc_unix_data_sourcing : ALL
++ : usa : ALL
++ : yellow-na-storage-svc : ALL
+##############################################################################
+# All other users should be denied to get access from all sources.
+##############################################################################
+- : ALL : ALL
+
