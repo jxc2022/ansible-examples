@@ -1,0 +1,60 @@
+---
+# sssd_access_report.yml - CSV of allowed AD groups per host
+#   access_provider = simple -> simple_allow_groups from /etc/sssd/sssd.conf
+#   access_provider = permit -> (groups) from /etc/security/access.conf
+- name: SSSD access group report
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    report_path: /tmp/sssd_access_report.csv
+    mail_to: CHANGEME@example.com
+    mail_from: aap-reports@example.com
+    smtp_host: localhost
+    smtp_port: 25
+
+  tasks:
+    - name: Get access provider and allowed groups
+      ansible.builtin.shell: |
+        sssd=$(cat /etc/sssd/sssd.conf 2>/dev/null)
+        prov=$(echo "$sssd" | sed -n 's/^[ \t]*access_provider[ \t]*=[ \t]*//p' | tail -1 | tr -d ' \t\r' | tr A-Z a-z)
+        [ -z "$prov" ] && [ -n "$sssd" ] && prov=permit      # permit is the SSSD default
+        src=n/a; groups=
+        case "$prov" in
+          simple) src=/etc/sssd/sssd.conf
+                  groups=$(echo "$sssd" | sed -n 's/^[ \t]*simple_allow_groups[ \t]*=//p' | tr ',' '\n') ;;
+          permit) src=/etc/security/access.conf
+                  groups=$(grep -E '^[ \t]*\+|EXCEPT' $src | cut -d: -f2 | grep -o '([^)]*)' | tr -d '()') ;;
+        esac
+        groups=$(echo "$groups" | tr -d '\r' | sed 's/^[ \t]*//;s/[ \t]*$//' | grep -v '^$' | sort -u)
+        echo "${groups:-}" | while read -r g; do echo "${prov:-not_found},$src,\"$g\""; done
+      register: acc
+      changed_when: false
+
+    - name: Write CSV
+      ansible.builtin.copy:
+        dest: "{{ report_path }}"
+        content: |
+          hostname,os_version,access_provider,source_file,group
+          {% for h in ansible_play_hosts %}
+          {% for line in hostvars[h].acc.stdout_lines %}
+          {{ h }},{{ hostvars[h].ansible_facts.distribution }} {{ hostvars[h].ansible_facts.distribution_version }},{{ line }}
+          {% endfor %}
+          {% endfor %}
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Email CSV
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        from: "{{ mail_from }}"
+        to: "{{ mail_to }}"
+        subject: "SSSD access group report"
+        body: "SSSD access group report attached ({{ ansible_play_hosts | length }} hosts)."
+        attach:
+          - "{{ report_path }}"
+      run_once: true
+      delegate_to: localhost
+      become: false
